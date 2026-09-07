@@ -1,8 +1,6 @@
 ## OpenReef: open-source 3D reconstruction workflow imaging coral reefs
 
-<p align="center">
-  <img src="src/openreef/assets/openreef-icon.png" alt="OpenReef icon" width="1024">
-</p>
+<img src="src/openreef/assets/openreef-icon.png" alt="OpenReef icon" width="250" align="right">
 
 OpenReef is an open-source desktop workspace for reconstructing 3D coral and reef-scale 3D models without requiring a US$3,499 Metashape Pro licence. It is designed around underwater photogrammetry and large-area imaging workflows in which overlapping photographs are converted into georeferenced or locally scaled 3D reconstructions that can be revisited through time.
 
