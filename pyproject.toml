@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openreef-viewer"
+version = "0.2.0"
+description = "Open-source coral photogrammetry workspace and 3D model viewer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "OpenReef contributors" }]
+keywords = ["coral-reef", "3d", "point-cloud", "mesh", "viewer"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: X11 Applications :: Qt",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+  "opencv-python-headless>=4.9",
+  "PySide6>=6.6",
+  "pyvista>=0.43",
+  "pyvistaqt>=0.11",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+openreef = "openreef.app:main"
+openreef-pipeline = "openreef.pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+openreef = ["assets/*.png", "assets/*.icns"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

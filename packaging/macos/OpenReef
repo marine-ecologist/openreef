@@ -1,0 +1,24 @@
+#!/bin/zsh
+
+app_root="/Users/rof011/openreef"
+runtime="/Users/rof011/.codex/.chatgpt-projects/g-p-6a8dd74eb34481919430c60f20d420b8/openreef/.venv"
+openmvs_bin="/Users/rof011/vcpkg/installed/arm64-osx/tools/openmvs"
+log_file="/Users/rof011/Library/Logs/OpenReef.log"
+matplotlib_cache="/Users/rof011/.cache/openreef/matplotlib"
+
+mkdir -p "${log_file:h}" "$matplotlib_cache"
+exec >>"$log_file" 2>&1
+print "\n$(date '+%Y-%m-%d %H:%M:%S') — launching OpenReef"
+
+if [[ ! -x "$runtime/bin/python" ]]; then
+    print "ERROR: OpenReef runtime not found at $runtime"
+    /usr/bin/osascript -e 'display alert "OpenReef could not start" message "The Python runtime is missing. See ~/Library/Logs/OpenReef.log for details."'
+    exit 1
+fi
+
+export PATH="/opt/homebrew/bin:$openmvs_bin:$PATH"
+export PYTHONPATH="$app_root/src${PYTHONPATH:+:$PYTHONPATH}"
+export MPLCONFIGDIR="$matplotlib_cache"
+cd "$app_root" || exit 1
+
+exec /usr/bin/arch -arm64 "$runtime/bin/python" -m openreef "$@"
