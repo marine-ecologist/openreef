@@ -16,8 +16,10 @@ from openreef.pipeline.stages import (
     StageConfigurationError,
     StageKey,
     build_stage_command,
+    selected_dense_levels,
     stage_output_exists,
     sync_model_links,
+    textured_output_for_level,
 )
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -188,6 +190,12 @@ class PipelineRunner(QObject):
             self.artifact_ready.emit(str(self._layout.dense_cloud))
         elif stage == StageKey.MESH and self._layout.surface_mesh.is_file():
             self.artifact_ready.emit(str(self._layout.surface_mesh))
+        elif stage == StageKey.TEXTURE and self._options:
+            for level, _, _ in selected_dense_levels(self._layout, self._options):
+                output = textured_output_for_level(self._layout, level)
+                if output.is_file():
+                    self.artifact_ready.emit(str(output))
+                    break
         self._start_next()
 
     def _process_error(self, error: QProcess.ProcessError) -> None:

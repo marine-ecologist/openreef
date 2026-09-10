@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from openreef.core.model import ModelDocument
@@ -16,6 +17,8 @@ class SceneController:
         self.plotter = plotter
         self.document: ModelDocument | None = None
         self._actors: list[tuple[Any, str]] = []
+        self._glb_actors: list[Any] = []
+        self._glb_source: Path | None = None
         self._display_mode = "Wireframe"
         self._point_size = 5
         self.plotter.set_background("#132028", top="#071015")
@@ -26,6 +29,24 @@ class SceneController:
         self.plotter.add_axes(line_width=2)
         self.document = document
         self._actors.clear()
+
+        if document.material_source is not None:
+            material_source = document.material_source.resolve()
+            source_is_material = document.source.resolve() == material_source
+            imported = source_is_material and self._import_textured_glb(material_source)
+            if not imported and self._glb_source != material_source:
+                imported = self._import_textured_glb(material_source)
+            if imported and not source_is_material:
+                imported = self._reuse_textured_actors(document)
+            elif not imported and self._glb_source == material_source:
+                imported = self._reuse_textured_actors(document)
+            if imported:
+                self.set_display_mode(self._display_mode)
+                self.fit_to_view()
+                return
+        else:
+            self._glb_actors.clear()
+            self._glb_source = None
 
         for part in document.parts:
             color_options: dict[str, object] = {}
@@ -54,6 +75,38 @@ class SceneController:
         self.set_display_mode(self._display_mode)
         self.fit_to_view()
 
+    def _import_textured_glb(self, source: Path) -> bool:
+        """Let VTK's glTF importer retain embedded materials and texture images."""
+        try:
+            renderer = self.plotter.renderer
+            existing = {id(actor) for actor in renderer.actors.values()}
+            self.plotter.import_gltf(source, set_camera=False)
+            imported = [
+                actor
+                for actor in renderer.actors.values()
+                if id(actor) not in existing
+                and hasattr(actor, "GetProperty")
+                and hasattr(actor.GetProperty(), "SetRepresentationToWireframe")
+            ]
+        except Exception:
+            return False
+        self._glb_actors = imported
+        self._glb_source = source
+        self._actors.extend((actor, "mesh") for actor in imported)
+        return bool(imported)
+
+    def _reuse_textured_actors(self, document: ModelDocument) -> bool:
+        """Keep the GLB importer pipeline while replacing it with edited geometry."""
+        mesh_parts = [part for part in document.parts if part.kind == "mesh"]
+        if not mesh_parts or len(mesh_parts) != len(self._glb_actors):
+            return False
+        self._actors.clear()
+        for part, actor in zip(mesh_parts, self._glb_actors, strict=True):
+            actor.GetMapper().SetInputData(part.dataset)
+            self.plotter.add_actor(actor, name=part.name)
+            self._actors.append((actor, "mesh"))
+        return True
+
     def set_display_mode(self, mode: str) -> None:
         if mode not in DISPLAY_MODES:
             raise ValueError(f"Unknown display mode: {mode}")
@@ -62,6 +115,8 @@ class SceneController:
             if kind == "point-cloud":
                 continue
             prop = actor.GetProperty()
+            if not hasattr(prop, "SetRepresentationToWireframe"):
+                continue
             if mode == "Wireframe":
                 prop.SetRepresentationToWireframe()
                 prop.SetEdgeVisibility(False)

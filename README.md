@@ -4,7 +4,7 @@
 
 OpenReef is an open-source desktop workspace for reconstructing 3D coral and reef-scale 3D models without requiring a US$3,499 Metashape Pro licence. It is designed around underwater photogrammetry and large-area imaging workflows in which overlapping photographs are converted into georeferenced or locally scaled 3D reconstructions that can be revisited through time.
 
-OpenReef adopts the same underlying standardised workflow as (reefshape)[https://github.com/Perry-Institute/ReefShape]: standardised acquisition, repeatable reconstruction, explicit quality control, and analysis-ready outputs, but replaces the proprietary Metashape processing dependency with an open-source reconstruction stack. COLMAP performs feature extraction, image matching, camera calibration, and sparse structure-from-motion; OpenMVS then generates dense point clouds and surface meshes. A PyVista/VTK-based viewer provides local inspection of the sparse and dense reconstruction, camera geometry, and model quality.
+OpenReef adopts the same underlying standardised workflow as [ReefShape](https://github.com/Perry-Institute/ReefShape): standardised acquisition, repeatable reconstruction, explicit quality control, and analysis-ready outputs, but replaces the proprietary Metashape processing dependency with an open-source reconstruction stack. COLMAP performs feature extraction, image matching, camera calibration, and sparse structure-from-motion; OpenMVS then generates dense point clouds, surface meshes, and image-derived textures. A PyVista/VTK-based viewer provides local inspection of the sparse and dense reconstruction, camera geometry, and model quality.
 
 For repeat monitoring, v1.0 of OpenReef will  support fixed or temporary scale bars, coded targets, and stable non-collinear reference markers so that models can be placed in a consistent scale and coordinate frame through time, allowing reconstructions to become a quantitative monitoring product rather than simply a 3D visualisation. The end goal of OpenReef will be to support measurements such as colony dimensions, surface area, volume, structural complexity, and change between surveys.
 
@@ -29,12 +29,18 @@ For repeat monitoring, v1.0 of OpenReef will  support fixed or temporary scale b
   percentages defaulting to 100%, 20%, and 5%.
 - Pass every selected dense cloud—including its OpenMVS camera-view metadata—
   into surface reconstruction to create a matching mesh at each level.
+- Continue from **Dense Cloud** into the separate **Texture Mesh** tab to project
+  registered photographs onto any selected Original, Medium, or Low mesh and
+  export a portable, self-contained GLB.
+- Create an `openreef-web/` browser-viewer folder from a GLB or PLY model, with
+  a double-click macOS launcher, display controls, fit-to-view, and screenshots.
 - Keep the Viewer responsive while processing continues in the background.
 - Follow every stage through per-stage and overall progress bars, elapsed time,
   current-stage status, and streaming terminal output.
 - Control CPU threads, an optional process RAM ceiling, camera model, GPU use,
   image size, sequence overlap, dense resolution, neighbor views, fusion
-  agreement, colors, and normals.
+  agreement, colors, normals, texture image scale, atlas size, sharpness, and
+  seam blending.
 - Open PLY, OBJ, and GLB files (GLB depends on the bundled VTK reader).
 - Display meshes and point clouds, including per-vertex RGB/RGBA colors.
 - Orbit, pan, zoom, fit to view, switch projection, and use six standard views.
@@ -49,15 +55,15 @@ For repeat monitoring, v1.0 of OpenReef will  support fixed or temporary scale b
   against the source mesh before the selected output complexity is saved.
 - Export screenshots and save or restore JSON camera viewpoints.
 
-OpenReef 0.2 includes OpenMVS surface reconstruction, sparse-camera QA, a
-downstream processing ROI, and an initial
-non-destructive lasso-trimming workflow. It does **not** yet perform hole
-filling or mesh repair, alignment, scaling, or scientific analysis.
+OpenReef 0.2 includes OpenMVS surface reconstruction and texturing,
+sparse-camera QA, a downstream processing ROI, and an initial non-destructive
+lasso-trimming workflow. It does **not** yet perform hole filling or mesh
+repair, alignment, scaling, or scientific analysis.
 
 ### Setup and run
 
-OpenReef is tested on macOS requires Python 3.10 or newer, COLMAP, OpenMVS, and a working OpenGL
-environment.
+OpenReef is tested on macOS and requires Python 3.10 or newer, COLMAP, OpenMVS,
+and a working OpenGL environment.
 
 ```bash
 python -m venv .venv
@@ -74,6 +80,41 @@ OpenReef can also be run as a module:
 python -m openreef path/to/dataset
 ```
 
+### Dense and textured mesh workflow
+
+The reconstruction workflow is split into top-level **Sparse Cloud**, **Dense
+Cloud**, and **Texture Mesh** tabs. Dense Cloud creates the selected point
+clouds and surface meshes. Texture Mesh then uses OpenMVS to project the
+registered source photographs onto any matching Original, Medium, or Low mesh:
+
+```text
+Dense point cloud → Surface mesh → Texture mesh
+```
+
+In Texture Mesh, select the mesh levels to texture, leave **Texture image
+scale** at `0` for the best available image resolution, and run the selected
+stage. Level `1` uses half-size images and level `2` uses quarter-size images,
+reducing memory use and runtime.
+The default 8192 px atlas size, 0.5 sharpness, patch balancing, and seam blending
+are suitable starting values.
+
+OpenReef exports GLB because it stores mesh geometry, materials, and texture
+images together in one portable file. Finished files are linked into `models/`
+with dataset-based names. In 3D Viewer, open the GLB and select **Solid** or
+**Solid + wireframe** to display its embedded texture.
+
+### Web Export
+
+Open **Web Export**, choose a dataset and one of its GLB or PLY models, then
+choose an output folder. The default is `dataset/openreef-web/`. OpenReef copies
+the model and creates `index.html`, its viewer files, a small local server, and
+`Open OpenReef Web.command`.
+
+On macOS, double-click that command file to open the model in the default web
+browser. Keep the accompanying Terminal window open while viewing. The model is
+served only from the exported folder on the local computer; an internet
+connection is currently required to load the Three.js viewer library.
+
 ### Command-line pipeline (no GUI)
 
 Run the complete reconstruction directly in Terminal with the included script:
@@ -85,9 +126,10 @@ Run the complete reconstruction directly in Terminal with the included script:
 
 The default pipeline runs feature extraction, sequential matching, sparse
 reconstruction, image undistortion/PINHOLE conversion, OpenMVS import, dense
-point-cloud generation, and surface-mesh reconstruction. Output already on disk
-is skipped, so the same command can resume an interrupted dataset. Live COLMAP
-and OpenMVS output is printed in Terminal; press `Control-C` to stop.
+point-cloud generation, surface-mesh reconstruction, and GLB texturing. Output
+already on disk is skipped, so the same command can resume an interrupted
+dataset. Live COLMAP and OpenMVS output is printed in Terminal; press
+`Control-C` to stop.
 
 Useful examples:
 
@@ -100,16 +142,20 @@ Useful examples:
 
 # Run only the OpenMVS stages
 ./scripts/openreef-pipeline.sh /path/to/dataset \
-  --stages openmvs_import,dense,mesh
+  --stages openmvs_import,dense,mesh,texture
 
-# Also create Medium and Low clouds and pass them into surface reconstruction
+# Create Medium and Low clouds, meshes, and textured GLBs
 ./scripts/openreef-pipeline.sh /path/to/dataset \
-  --stages dense --dense-medium --dense-low
+  --stages dense,mesh,texture --dense-medium --dense-low
 
 # Override the default retained-point percentages
 ./scripts/openreef-pipeline.sh /path/to/dataset \
-  --stages dense,mesh --dense-medium --dense-low \
+  --stages dense,mesh,texture --dense-medium --dense-low \
   --dense-medium-percent 30 --dense-low-percent 10
+
+# Texture existing selected meshes using half-resolution source images
+./scripts/openreef-pipeline.sh /path/to/dataset \
+  --stages texture --texture-resolution-level 1
 
 # Rebuild the surface mesh even when it already exists
 ./scripts/openreef-pipeline.sh /path/to/dataset --stages mesh --force
@@ -121,6 +167,8 @@ finished friendly filenames are collected in `models/`, including
 `dataset_sparsecloud.ply`, `dataset_densecloud_high.ply`, optional
 `dataset_densecloud_medium.ply` and `dataset_densecloud_low.ply`, and
 matching `dataset_mesh_medium.ply` and `dataset_mesh_low.ply` files.
+Textured outputs use `dataset_textured_mesh.glb`, with optional
+`dataset_textured_mesh_medium.glb` and `dataset_textured_mesh_low.glb` files.
 `dataset_densecloud.ply` remains as a compatibility name for the High cloud.
 
 After an editable installation, the same runner is also available as:
@@ -168,6 +216,9 @@ dataset/
 │   ├── dataset_mesh.ply         -> OpenMVS full mesh
 │   ├── dataset_mesh_medium.ply  -> optional Medium surface mesh
 │   ├── dataset_mesh_low.ply     -> optional Low surface mesh
+│   ├── dataset_textured_mesh.glb         -> complete textured mesh
+│   ├── dataset_textured_mesh_medium.glb  -> optional Medium textured mesh
+│   ├── dataset_textured_mesh_low.glb     -> optional Low textured mesh
 │   └── dataset_mesh_lores.ply   current Viewer complexity preview
 │
 ├── colmap/
@@ -205,7 +256,10 @@ dataset/
     ├── scene_mesh_medium.mvs
     ├── scene_mesh_medium.ply
     ├── scene_mesh_low.mvs
-    └── scene_mesh_low.ply
+    ├── scene_mesh_low.ply
+    ├── scene_mesh_textured.glb
+    ├── scene_mesh_medium_textured.glb
+    └── scene_mesh_low_textured.glb
 
 ```
 
@@ -261,6 +315,9 @@ components in one coordinate system. OpenReef keeps that uncertainty visible
 instead of guessing a transformation between unrelated components.
 
 In 3D Viewer, use **Open model…** and **Save as…** at the top of the right panel.
+Open a textured GLB and switch from the default Wireframe mode to Solid to see
+its embedded image texture. GLB keeps the geometry, materials, and texture
+atlases together in one file.
 Orbit with the left mouse button, pan with the middle button or a
 two-finger trackpad move, and zoom with pinch, a mouse wheel, or the right button. Meshes
 open in wireframe mode by default. Mesh trimming and complexity controls live
@@ -282,6 +339,7 @@ ruff check .
 ```text
 src/openreef/
 ├── app.py                 startup and command-line entry point
+├── web_export.py          portable HTML viewer-folder generator
 ├── core/
 │   ├── camera.py          serializable camera viewpoint state
 │   ├── mesh_edit.py       screen-projected lasso clipping and edited-file export
@@ -292,7 +350,7 @@ src/openreef/
 │   ├── stages.py          dataset contract, validation, and stage commands
 │   ├── runner.py          asynchronous queue, progress, logs, and cancellation
 │   ├── limited_exec.py    optional per-process RAM ceiling
-│   └── tasks.py           OpenMVS image workspace preparation
+│   └── tasks.py           OpenMVS preparation and multi-level dense/mesh/texture tasks
 ├── io/
 │   ├── colmap_model.py    camera-pose reader, sparse ROI, and model filtering
 │   └── model_loader.py    PLY/OBJ/GLB loading and multiblock normalization
@@ -301,6 +359,7 @@ src/openreef/
     ├── pipeline_page.py   stage cards, compute options, and live terminal
     ├── points_viewer_page.py sparse-point, camera, and processing-ROI viewer
     ├── viewport.py        mouse, trackpad, and freehand lasso interaction
+    ├── web_export_page.py model selection, copy progress, and browser export
     └── main_window.py     tabbed Qt application shell and user actions
 ```
 
@@ -314,7 +373,7 @@ format-neutral `ModelDocument`, keeping rendering independent from reconstructio
 
 ## Roadmap
 
-- **0.3:** multi-model history, richer materials, texture handling, mesh repair,
+- **0.3:** multi-model history, richer material controls, mesh repair,
   measurement, scale metadata, and annotations.
 - **Later:** alignment, batch/timelapse orchestration, and scientific change
   analysis. Processing will remain separate from the viewer core so OpenReef

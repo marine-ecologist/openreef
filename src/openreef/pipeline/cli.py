@@ -76,21 +76,40 @@ def build_parser() -> argparse.ArgumentParser:
         "--dense-original",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Create the Original dense-cloud and surface-mesh outputs",
+        help="Create the Original dense-cloud, surface-mesh, and texture outputs",
     )
     parser.add_argument(
         "--dense-low",
         action="store_true",
-        help="Also create the Low dense-cloud and surface-mesh outputs",
+        help="Also create the Low dense-cloud, surface-mesh, and texture outputs",
     )
     parser.add_argument(
         "--dense-medium",
         action="store_true",
-        help="Also create the Medium dense-cloud and surface-mesh outputs",
+        help="Also create the Medium dense-cloud, surface-mesh, and texture outputs",
     )
     parser.add_argument("--dense-original-percent", type=int, default=100)
     parser.add_argument("--dense-medium-percent", type=int, default=20)
     parser.add_argument("--dense-low-percent", type=int, default=5)
+    parser.add_argument(
+        "--texture-resolution-level",
+        type=int,
+        choices=range(0, 5),
+        default=0,
+        help="Texture source-image scale: 0 is full resolution; each level halves it",
+    )
+    parser.add_argument("--max-texture-size", type=int, default=8192)
+    parser.add_argument("--texture-sharpness", type=float, default=0.5)
+    parser.add_argument(
+        "--global-seam-leveling",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--local-seam-leveling",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     return parser
 
 
@@ -116,6 +135,11 @@ def run_pipeline(args: argparse.Namespace) -> int:
         dense_original_percent=args.dense_original_percent,
         dense_medium_percent=args.dense_medium_percent,
         dense_low_percent=args.dense_low_percent,
+        texture_resolution_level=args.texture_resolution_level,
+        max_texture_size=args.max_texture_size,
+        texture_sharpness=args.texture_sharpness,
+        global_seam_leveling=args.global_seam_leveling,
+        local_seam_leveling=args.local_seam_leveling,
     )
     print(f"OpenReef command-line pipeline\nDataset: {layout.root}", flush=True)
     for index, stage in enumerate(args.stages, start=1):

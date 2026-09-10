@@ -481,6 +481,62 @@ def mesh_multi(args: argparse.Namespace) -> int:
     return 0
 
 
+def texture_multi(args: argparse.Namespace) -> int:
+    """Texture each selected mesh level and export a self-contained GLB."""
+    openmvs = Path(args.openmvs_folder)
+    levels = [item.strip() for item in args.levels.split(",") if item.strip()]
+    mesh_names = {
+        "original": "scene_mesh.ply",
+        "medium": "scene_mesh_medium.ply",
+        "low": "scene_mesh_low.ply",
+    }
+    output_names = {
+        "original": "scene_mesh_textured.mvs",
+        "medium": "scene_mesh_medium_textured.mvs",
+        "low": "scene_mesh_low_textured.mvs",
+    }
+    for index, level in enumerate(levels, start=1):
+        mesh = openmvs / mesh_names[level]
+        if not mesh.is_file():
+            print(f"Missing selected surface mesh: {mesh}", flush=True)
+            return 1
+        output = output_names[level]
+        command = [
+            args.executable,
+            "scene_dense.mvs",
+            "-m",
+            mesh.name,
+            "-o",
+            output,
+            "--export-type",
+            "glb",
+            "--max-threads",
+            str(args.cores),
+            "--resolution-level",
+            str(args.resolution_level),
+            "--max-texture-size",
+            str(args.max_texture_size),
+            "--sharpness-weight",
+            str(args.sharpness_weight),
+            "--global-seam-leveling",
+            str(args.global_seam_leveling),
+            "--local-seam-leveling",
+            str(args.local_seam_leveling),
+        ]
+        print(
+            f"[{index}/{len(levels)}] Texturing {level.title()} surface mesh as GLB",
+            flush=True,
+        )
+        result = subprocess.run(command, cwd=openmvs, check=False)
+        if result.returncode != 0:
+            return result.returncode
+        expected = (openmvs / output).with_suffix(".glb")
+        if not expected.is_file():
+            print(f"TextureMesh did not create its expected output: {expected}", flush=True)
+            return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="task", required=True)
@@ -527,6 +583,16 @@ def main() -> int:
     mesh.add_argument("--medium-percent", type=int, required=True)
     mesh.add_argument("--low-percent", type=int, required=True)
     mesh.add_argument("--cores", type=int, required=True)
+    texture = subparsers.add_parser("texture-multi")
+    texture.add_argument("--executable", required=True)
+    texture.add_argument("--openmvs-folder", required=True)
+    texture.add_argument("--levels", required=True)
+    texture.add_argument("--cores", type=int, required=True)
+    texture.add_argument("--resolution-level", type=int, required=True)
+    texture.add_argument("--max-texture-size", type=int, required=True)
+    texture.add_argument("--sharpness-weight", type=float, required=True)
+    texture.add_argument("--global-seam-leveling", type=int, required=True)
+    texture.add_argument("--local-seam-leveling", type=int, required=True)
     args = parser.parse_args()
     if args.task == "import-openmvs":
         return import_openmvs(args)
@@ -538,6 +604,8 @@ def main() -> int:
         return dense_multi(args)
     if args.task == "mesh-multi":
         return mesh_multi(args)
+    if args.task == "texture-multi":
+        return texture_multi(args)
     return 2
 
 

@@ -84,6 +84,28 @@ def test_reconstruction_outputs_are_linked_into_models_folder(tmp_path: Path) ->
     assert dense_link.resolve() == dense.resolve()
 
 
+def test_textured_mesh_levels_are_linked_without_name_collisions(tmp_path: Path) -> None:
+    layout = DatasetLayout(tmp_path)
+    layout.openmvs.mkdir(parents=True)
+    for name in (
+        "scene_mesh.ply",
+        "scene_mesh_medium.ply",
+        "scene_mesh_low.ply",
+        "scene_mesh_textured.glb",
+        "scene_mesh_medium_textured.glb",
+        "scene_mesh_low_textured.glb",
+    ):
+        (layout.openmvs / name).touch()
+
+    links = sync_model_links(layout)
+    names = {path.name for path in links}
+
+    assert f"{tmp_path.name}_textured_mesh.glb" in names
+    assert f"{tmp_path.name}_textured_mesh_original.glb" in names
+    assert f"{tmp_path.name}_textured_mesh_medium.glb" in names
+    assert f"{tmp_path.name}_textured_mesh_low.glb" in names
+
+
 def test_roi_change_invalidates_openmvs_outputs(tmp_path: Path) -> None:
     layout = DatasetLayout(tmp_path)
     prepare_selected_sparse_chain(layout)
@@ -282,6 +304,38 @@ def test_surface_mesh_command_and_output_detection(
     assert stage_output_exists(StageKey.MESH, layout)
 
 
+def test_texture_command_and_output_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = DatasetLayout(tmp_path)
+    prepare_selected_sparse_chain(layout)
+    layout.dense_scene.touch()
+    layout.dense_cloud.touch()
+    layout.surface_mesh.touch()
+    monkeypatch.setattr("openreef.pipeline.stages.resolve_executable", lambda name: f"/{name}")
+    options = PipelineOptions(
+        cores=7,
+        texture_resolution_level=1,
+        max_texture_size=4096,
+        texture_sharpness=0.7,
+        local_seam_leveling=False,
+    )
+
+    command = build_stage_command(StageKey.TEXTURE, layout, options)
+
+    assert command.program.endswith("python")
+    assert "texture-multi" in command.arguments
+    assert "/TextureMesh" in command.arguments
+    assert command.arguments[command.arguments.index("--levels") + 1] == "original"
+    assert command.arguments[command.arguments.index("--resolution-level") + 1] == "1"
+    assert command.arguments[command.arguments.index("--max-texture-size") + 1] == "4096"
+    assert command.arguments[command.arguments.index("--sharpness-weight") + 1] == "0.7"
+    assert command.arguments[command.arguments.index("--local-seam-leveling") + 1] == "0"
+    assert not stage_output_exists(StageKey.TEXTURE, layout, options)
+    (layout.openmvs / "scene_mesh_textured.glb").touch()
+    assert stage_output_exists(StageKey.TEXTURE, layout, options)
+
+
 def test_dense_command_requests_optional_viewing_clouds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -417,6 +471,50 @@ def test_mesh_multi_passes_each_dense_cloud_to_openmvs(
         "scene_mesh_medium.mvs",
         "scene_mesh_low.mvs",
     ]
+
+
+def test_texture_multi_exports_each_selected_mesh_as_glb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openreef.pipeline.tasks import texture_multi
+
+    for name in ("scene_mesh.ply", "scene_mesh_medium.ply", "scene_mesh_low.ply"):
+        (tmp_path / name).touch()
+    commands: list[list[str]] = []
+
+    def record(command: list[str], **kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        output = Path(command[command.index("-o") + 1]).with_suffix(".glb")
+        (tmp_path / output).touch()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("openreef.pipeline.tasks.subprocess.run", record)
+    result = texture_multi(
+        Namespace(
+            executable="/TextureMesh",
+            openmvs_folder=str(tmp_path),
+            levels="original,medium,low",
+            cores=8,
+            resolution_level=0,
+            max_texture_size=8192,
+            sharpness_weight=0.5,
+            global_seam_leveling=1,
+            local_seam_leveling=1,
+        )
+    )
+
+    assert result == 0
+    assert [command[command.index("-m") + 1] for command in commands] == [
+        "scene_mesh.ply",
+        "scene_mesh_medium.ply",
+        "scene_mesh_low.ply",
+    ]
+    assert [command[command.index("-o") + 1] for command in commands] == [
+        "scene_mesh_textured.mvs",
+        "scene_mesh_medium_textured.mvs",
+        "scene_mesh_low_textured.mvs",
+    ]
+    assert all(command[command.index("--export-type") + 1] == "glb" for command in commands)
 
 
 def test_terminal_helpers() -> None:

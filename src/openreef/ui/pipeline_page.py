@@ -34,10 +34,12 @@ from openreef.pipeline.stages import (
     GENERATE_STAGES,
     STAGE_LABELS,
     STAGE_OUTPUTS,
+    TEXTURE_STAGES,
     DatasetLayout,
     PipelineOptions,
     StageKey,
     stage_output_exists,
+    textured_output_for_level,
 )
 
 
@@ -99,7 +101,11 @@ class PipelinePage(QWidget):
         super().__init__(parent)
         self.page_kind = page_kind
         self.runner = runner
-        self.stages = GENERATE_STAGES if page_kind == "generate" else DENSE_STAGES
+        self.stages = {
+            "generate": GENERATE_STAGES,
+            "dense": DENSE_STAGES,
+            "texture": TEXTURE_STAGES,
+        }[page_kind]
         self.cards: dict[StageKey, StageCard] = {}
         self._artifact_path: Path | None = None
         self._external_busy = False
@@ -109,7 +115,7 @@ class PipelinePage(QWidget):
         layout.setSpacing(12)
         layout.addLayout(self._build_header())
         layout.addWidget(self._build_stages())
-        if self.page_kind == "dense":
+        if self.page_kind in ("dense", "texture"):
             option_row = QHBoxLayout()
             option_row.addWidget(self._build_output_levels())
             option_row.addWidget(self._build_options(), 1)
@@ -140,7 +146,11 @@ class PipelinePage(QWidget):
             ),
             "dense": (
                 "Dense Cloud",
-                "Import the sparse model into OpenMVS, then generate a dense cloud and mesh.",
+                "Build OpenMVS dense clouds and matching surface meshes.",
+            ),
+            "texture": (
+                "Texture Mesh",
+                "Project registered photographs onto each selected surface mesh.",
             ),
         }
         title, subtitle = titles[self.page_kind]
@@ -171,7 +181,6 @@ class PipelinePage(QWidget):
         folder_box.addWidget(folder_label)
         folder_box.addLayout(folder_row)
         folder_box.addWidget(self.dataset_summary)
-        header.addLayout(folder_box, 2)
         return header
 
     def _build_stages(self) -> QScrollArea:
@@ -243,7 +252,7 @@ class PipelinePage(QWidget):
             form_right.addRow("Sequence overlap", self.overlap)
             form_right.addRow(self.single_camera)
             form_right.addRow(self.use_gpu)
-        else:
+        elif self.page_kind == "dense":
             self.resolution_level = QSpinBox()
             self.resolution_level.setRange(0, 4)
             self.resolution_level.setValue(1)
@@ -266,13 +275,46 @@ class PipelinePage(QWidget):
             form_left = QFormLayout()
             form_left.addRow("CPU budget", self.cores)
             form_left.addRow("RAM limit", self.memory)
-            form_left.addRow("Resolution level", self.resolution_level)
+            form_left.addRow("Dense image scale", self.resolution_level)
             form_right = QFormLayout()
-            form_right.addRow("Max resolution", self.max_resolution)
+            form_right.addRow("Max dense resolution", self.max_resolution)
             form_right.addRow("Neighbor views", self.number_views)
             form_right.addRow("Fusion agreement", self.fusion_views)
             form_right.addRow(self.estimate_colors)
             form_right.addRow(self.estimate_normals)
+        else:
+            self.texture_resolution_level = QSpinBox()
+            self.texture_resolution_level.setRange(0, 4)
+            self.texture_resolution_level.setValue(0)
+            self.texture_resolution_level.setToolTip(
+                "0 uses full-resolution images; each higher level halves them."
+            )
+            self.max_texture_size = QSpinBox()
+            self.max_texture_size.setRange(1024, 16384)
+            self.max_texture_size.setSingleStep(1024)
+            self.max_texture_size.setValue(8192)
+            self.max_texture_size.setSuffix(" px")
+            self.max_texture_size.setToolTip(
+                "Maximum atlas size. OpenMVS creates multiple atlases if required."
+            )
+            self.texture_sharpness = QDoubleSpinBox()
+            self.texture_sharpness.setRange(0.0, 2.0)
+            self.texture_sharpness.setSingleStep(0.1)
+            self.texture_sharpness.setValue(0.5)
+            self.texture_sharpness.setToolTip("Texture sharpening; 0 disables it.")
+            self.global_seam_leveling = QCheckBox("Balance texture patches")
+            self.global_seam_leveling.setChecked(True)
+            self.local_seam_leveling = QCheckBox("Blend patch seams")
+            self.local_seam_leveling.setChecked(True)
+            form_left = QFormLayout()
+            form_left.addRow("CPU budget", self.cores)
+            form_left.addRow("RAM limit", self.memory)
+            form_left.addRow("Texture image scale", self.texture_resolution_level)
+            form_right = QFormLayout()
+            form_right.addRow("Texture atlas size", self.max_texture_size)
+            form_right.addRow("Texture sharpness", self.texture_sharpness)
+            form_right.addRow(self.global_seam_leveling)
+            form_right.addRow(self.local_seam_leveling)
 
         grid.addLayout(form_left, 0, 0)
         grid.addLayout(form_right, 0, 1)
@@ -285,7 +327,8 @@ class PipelinePage(QWidget):
         group.setMinimumWidth(280)
         grid = QGridLayout(group)
         grid.addWidget(QLabel("CREATE"), 0, 0)
-        grid.addWidget(QLabel("POINTS RETAINED"), 0, 1)
+        level_detail = "POINTS RETAINED" if self.page_kind == "dense" else "MESH SOURCE"
+        grid.addWidget(QLabel(level_detail), 0, 1)
 
         rows = (
             ("original", "Original", 100, True),
@@ -299,10 +342,11 @@ class PipelinePage(QWidget):
             amount.setRange(1, 100)
             amount.setValue(percentage)
             amount.setSuffix(" %")
-            amount.setEnabled(selected)
-            checkbox.toggled.connect(amount.setEnabled)
+            amount.setEnabled(selected and self.page_kind == "dense")
+            if self.page_kind == "dense":
+                checkbox.toggled.connect(amount.setEnabled)
             checkbox.setToolTip(
-                "Selected levels are generated as dense clouds and passed into Surface mesh."
+                "Use matching Original, Medium, or Low outputs across processing tabs."
             )
             setattr(self, f"dense_{key}", checkbox)
             setattr(self, f"dense_{key}_percent", amount)
@@ -334,7 +378,7 @@ class PipelinePage(QWidget):
         row.addWidget(self.elapsed)
 
         self.open_artifact = QPushButton("Open latest model in Viewer")
-        self.open_artifact.setVisible(self.page_kind == "dense")
+        self.open_artifact.setVisible(self.page_kind in ("dense", "texture"))
         self.open_artifact.setEnabled(False)
         self.open_artifact.clicked.connect(self._open_artifact)
         row.addWidget(self.open_artifact)
@@ -374,20 +418,33 @@ class PipelinePage(QWidget):
                 max_image_size=self.max_image_size.value(),
                 sequential_overlap=self.overlap.value(),
             )
+        levels = {
+            "dense_original": self.dense_original.isChecked(),
+            "dense_low": self.dense_low.isChecked(),
+            "dense_medium": self.dense_medium.isChecked(),
+            "dense_original_percent": self.dense_original_percent.value(),
+            "dense_medium_percent": self.dense_medium_percent.value(),
+            "dense_low_percent": self.dense_low_percent.value(),
+        }
+        if self.page_kind == "dense":
+            return PipelineOptions(
+                **common,
+                **levels,
+                resolution_level=self.resolution_level.value(),
+                max_resolution=self.max_resolution.value(),
+                number_views=self.number_views.value(),
+                number_views_fuse=self.fusion_views.value(),
+                estimate_colors=self.estimate_colors.isChecked(),
+                estimate_normals=self.estimate_normals.isChecked(),
+            )
         return PipelineOptions(
             **common,
-            resolution_level=self.resolution_level.value(),
-            max_resolution=self.max_resolution.value(),
-            number_views=self.number_views.value(),
-            number_views_fuse=self.fusion_views.value(),
-            estimate_colors=self.estimate_colors.isChecked(),
-            estimate_normals=self.estimate_normals.isChecked(),
-            dense_original=self.dense_original.isChecked(),
-            dense_low=self.dense_low.isChecked(),
-            dense_medium=self.dense_medium.isChecked(),
-            dense_original_percent=self.dense_original_percent.value(),
-            dense_medium_percent=self.dense_medium_percent.value(),
-            dense_low_percent=self.dense_low_percent.value(),
+            **levels,
+            texture_resolution_level=self.texture_resolution_level.value(),
+            max_texture_size=self.max_texture_size.value(),
+            texture_sharpness=self.texture_sharpness.value(),
+            global_seam_leveling=self.global_seam_leveling.isChecked(),
+            local_seam_leveling=self.local_seam_leveling.isChecked(),
         )
 
     def set_external_busy(self, busy: bool) -> None:
@@ -410,8 +467,31 @@ class PipelinePage(QWidget):
                 card.set_status("ready", "Existing output found")
             else:
                 card.set_status("waiting", "Waiting")
-        if self.page_kind == "dense" and layout.dense_cloud.is_file():
-            self._artifact_ready(str(layout.dense_cloud))
+        if self.page_kind == "texture":
+            latest = next(
+                (
+                    textured_output_for_level(layout, level)
+                    for level in ("original", "medium", "low")
+                    if textured_output_for_level(layout, level).is_file()
+                ),
+                None,
+            )
+            if latest:
+                self._artifact_ready(str(latest))
+        elif self.page_kind == "dense":
+            latest = next(
+                (
+                    path
+                    for path, current in (
+                        (layout.surface_mesh, stage_output_exists(StageKey.MESH, layout)),
+                        (layout.dense_cloud, stage_output_exists(StageKey.DENSE, layout)),
+                    )
+                    if current
+                ),
+                None,
+            )
+            if latest:
+                self._artifact_ready(str(latest))
 
     def _choose_folder(self) -> None:
         start = self.dataset_path.text() or str(Path.home())

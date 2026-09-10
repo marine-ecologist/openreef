@@ -21,6 +21,7 @@ class StageKey(str, Enum):
     OPENMVS_IMPORT = "openmvs_import"
     DENSE = "dense"
     MESH = "mesh"
+    TEXTURE = "texture"
 
 
 GENERATE_STAGES = (
@@ -30,7 +31,8 @@ GENERATE_STAGES = (
     StageKey.UNDISTORT,
 )
 DENSE_STAGES = (StageKey.OPENMVS_IMPORT, StageKey.DENSE, StageKey.MESH)
-ALL_STAGES = (*GENERATE_STAGES, *DENSE_STAGES)
+TEXTURE_STAGES = (StageKey.TEXTURE,)
+ALL_STAGES = (*GENERATE_STAGES, *DENSE_STAGES, *TEXTURE_STAGES)
 
 STAGE_LABELS = {
     StageKey.FEATURES: "Feature extraction",
@@ -40,6 +42,7 @@ STAGE_LABELS = {
     StageKey.OPENMVS_IMPORT: "OpenMVS import",
     StageKey.DENSE: "Dense point cloud",
     StageKey.MESH: "Surface mesh",
+    StageKey.TEXTURE: "Texture mesh",
 }
 
 STAGE_OUTPUTS = {
@@ -50,6 +53,7 @@ STAGE_OUTPUTS = {
     StageKey.OPENMVS_IMPORT: "openmvs/scene.mvs",
     StageKey.DENSE: "Selected Original / Medium / Low clouds",
     StageKey.MESH: "Matching meshes for selected dense-cloud levels",
+    StageKey.TEXTURE: "Self-contained textured GLB files",
 }
 
 IMAGE_EXTENSIONS = {
@@ -89,6 +93,11 @@ class PipelineOptions:
     dense_original_percent: int = 100
     dense_medium_percent: int = 20
     dense_low_percent: int = 5
+    texture_resolution_level: int = 0
+    max_texture_size: int = 8192
+    texture_sharpness: float = 0.5
+    global_seam_leveling: bool = True
+    local_seam_leveling: bool = True
 
 
 @dataclass(frozen=True)
@@ -324,6 +333,11 @@ def main_model_outputs(layout: DatasetLayout) -> dict[str, Path]:
                     "scene_mesh.ply": layout.dense_cloud,
                     "scene_mesh_medium.ply": layout.dense_cloud_medium,
                     "scene_mesh_low.ply": layout.dense_cloud_low,
+                    "scene_mesh_textured.glb": layout.surface_mesh,
+                    "scene_mesh_medium_textured.glb": mesh_output_for_level(
+                        layout, "medium"
+                    ),
+                    "scene_mesh_low_textured.glb": mesh_output_for_level(layout, "low"),
                 }.get(path.name)
                 if (
                     freshness_source
@@ -343,8 +357,13 @@ def main_model_outputs(layout: DatasetLayout) -> dict[str, Path]:
                 elif path.name == "scene_mesh.ply":
                     outputs[f"{label}_mesh_original.ply"] = path
                     name = f"{label}_mesh.ply"
-                elif "texture" in path.stem:
-                    name = f"{label}_textured_mesh{path.suffix.lower()}"
+                elif path.name == "scene_mesh_textured.glb":
+                    outputs[f"{label}_textured_mesh_original.glb"] = path
+                    name = f"{label}_textured_mesh.glb"
+                elif path.name == "scene_mesh_medium_textured.glb":
+                    name = f"{label}_textured_mesh_medium.glb"
+                elif path.name == "scene_mesh_low_textured.glb":
+                    name = f"{label}_textured_mesh_low.glb"
                 else:
                     name = f"{label}_{path.name.removeprefix('scene_')}"
                 outputs[name] = path
@@ -487,6 +506,12 @@ def mesh_output_for_level(layout: DatasetLayout, level: str) -> Path:
     return layout.openmvs / f"scene_mesh_{level}.ply"
 
 
+def textured_output_for_level(layout: DatasetLayout, level: str) -> Path:
+    """Return the portable textured mesh written for an output level."""
+    suffix = "" if level == "original" else f"_{level}"
+    return layout.openmvs / f"scene_mesh{suffix}_textured.glb"
+
+
 def validate_dense_levels(levels: tuple[tuple[str, int, Path], ...]) -> None:
     if not levels:
         raise StageConfigurationError("Select at least one dense-cloud output level.")
@@ -586,6 +611,23 @@ def stage_output_exists(
         return complete and layout.surface_mesh.is_file() and _newer_than(
             layout.surface_mesh, layout.dense_scene
         )
+    if stage == StageKey.TEXTURE:
+        if options:
+            if not stage_output_exists(StageKey.MESH, layout, options):
+                return False
+            levels = selected_dense_levels(layout, options)
+            return bool(levels) and all(
+                textured_output_for_level(layout, level).is_file()
+                and _newer_than(
+                    textured_output_for_level(layout, level),
+                    mesh_output_for_level(layout, level),
+                )
+                for level, _, _ in levels
+            )
+        if not stage_output_exists(StageKey.MESH, layout):
+            return False
+        output = textured_output_for_level(layout, "original")
+        return output.is_file() and _newer_than(output, layout.surface_mesh)
     return False
 
 
@@ -645,6 +687,28 @@ def validate_stage(
             if invalid:
                 raise StageConfigurationError(
                     "Generate the selected dense cloud level(s) first: " + ", ".join(invalid)
+                )
+    elif stage == StageKey.TEXTURE:
+        if not layout.dense_scene.is_file():
+            raise StageConfigurationError(
+                "Generate the dense point cloud first; scene_dense.mvs is missing."
+            )
+        if options:
+            levels = selected_dense_levels(layout, options)
+            validate_dense_levels(levels)
+            missing = [
+                mesh_output_for_level(layout, level).name
+                for level, _, _ in levels
+                if not mesh_output_for_level(layout, level).is_file()
+            ]
+            if missing:
+                raise StageConfigurationError(
+                    "Generate the selected surface mesh level(s) first: "
+                    + ", ".join(missing)
+                )
+            if not stage_output_exists(StageKey.MESH, layout, options):
+                raise StageConfigurationError(
+                    "The selected surface mesh predates its dense cloud; rerun Surface mesh."
                 )
 
 
@@ -818,6 +882,34 @@ def build_stage_command(
                 str(options.dense_low_percent),
                 "--cores",
                 str(options.cores),
+            ),
+            layout.openmvs,
+        )
+    if stage == StageKey.TEXTURE:
+        return StageCommand(
+            sys.executable,
+            (
+                "-m",
+                "openreef.pipeline.tasks",
+                "texture-multi",
+                "--executable",
+                resolve_executable("TextureMesh"),
+                "--openmvs-folder",
+                str(layout.openmvs),
+                "--levels",
+                ",".join(level for level, _, _ in selected_dense_levels(layout, options)),
+                "--cores",
+                str(options.cores),
+                "--resolution-level",
+                str(options.texture_resolution_level),
+                "--max-texture-size",
+                str(options.max_texture_size),
+                "--sharpness-weight",
+                str(options.texture_sharpness),
+                "--global-seam-leveling",
+                _flag(options.global_seam_leveling),
+                "--local-seam-leveling",
+                _flag(options.local_seam_leveling),
             ),
             layout.openmvs,
         )
