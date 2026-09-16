@@ -11,6 +11,7 @@ from pathlib import Path
 
 from openreef.pipeline.stages import (
     ALL_STAGES,
+    AVAILABLE_STAGES,
     STAGE_LABELS,
     DatasetLayout,
     PipelineOptions,
@@ -26,7 +27,7 @@ def _stage_list(value: str) -> tuple[StageKey, ...]:
     try:
         stages = tuple(StageKey(item.strip().replace("-", "_")) for item in value.split(","))
     except ValueError as exc:
-        choices = ", ".join(stage.value for stage in ALL_STAGES)
+        choices = ", ".join(stage.value for stage in AVAILABLE_STAGES)
         raise argparse.ArgumentTypeError(f"Unknown stage. Available stages: {choices}") from exc
     if not stages:
         raise argparse.ArgumentTypeError("Select at least one stage")
@@ -88,9 +89,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also create the Medium dense-cloud, surface-mesh, and texture outputs",
     )
+    parser.add_argument(
+        "--dense-compact",
+        action="store_true",
+        help="Also create Compact point, mesh, texture, and splat outputs under 100 MB",
+    )
     parser.add_argument("--dense-original-percent", type=int, default=100)
     parser.add_argument("--dense-medium-percent", type=int, default=20)
     parser.add_argument("--dense-low-percent", type=int, default=5)
+    parser.add_argument("--dense-compact-percent", type=int, default=1)
     parser.add_argument(
         "--texture-resolution-level",
         type=int,
@@ -110,6 +117,21 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument(
+        "--opensplat-executable",
+        default="",
+        help="OpenSplat binary; auto-detected when omitted",
+    )
+    parser.add_argument("--gaussian-iterations", type=int, default=7_000)
+    parser.add_argument("--gaussian-downscale", type=float, default=4.0)
+    parser.add_argument("--gaussian-max-points", type=int, default=2_000_000)
+    parser.add_argument("--gaussian-save-every", type=int, default=1_000)
+    parser.add_argument(
+        "--gaussian-resume", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument("--gaussian-center", action="store_true")
+    parser.add_argument("--gaussian-cpu", action="store_true")
+    parser.add_argument("--gaussian-low-memory", action="store_true")
     return parser
 
 
@@ -132,14 +154,25 @@ def run_pipeline(args: argparse.Namespace) -> int:
         dense_original=args.dense_original,
         dense_low=args.dense_low,
         dense_medium=args.dense_medium,
+        dense_compact=args.dense_compact,
         dense_original_percent=args.dense_original_percent,
         dense_medium_percent=args.dense_medium_percent,
         dense_low_percent=args.dense_low_percent,
+        dense_compact_percent=args.dense_compact_percent,
         texture_resolution_level=args.texture_resolution_level,
         max_texture_size=args.max_texture_size,
         texture_sharpness=args.texture_sharpness,
         global_seam_leveling=args.global_seam_leveling,
         local_seam_leveling=args.local_seam_leveling,
+        gaussian_executable=args.opensplat_executable,
+        gaussian_iterations=args.gaussian_iterations,
+        gaussian_downscale=args.gaussian_downscale,
+        gaussian_max_points=args.gaussian_max_points,
+        gaussian_save_every=args.gaussian_save_every,
+        gaussian_resume=args.gaussian_resume,
+        gaussian_center=args.gaussian_center,
+        gaussian_cpu=args.gaussian_cpu,
+        gaussian_low_memory=args.gaussian_low_memory,
     )
     print(f"OpenReef command-line pipeline\nDataset: {layout.root}", flush=True)
     for index, stage in enumerate(args.stages, start=1):

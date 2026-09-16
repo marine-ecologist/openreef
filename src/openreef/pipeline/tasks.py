@@ -6,13 +6,15 @@ import argparse
 import json
 import mmap
 import shutil
+import signal
 import struct
 import subprocess
 import sys
 from pathlib import Path
 
+from openreef.core.glb_edit import WEB_COMPACT_TARGET, make_compact_glb
 from openreef.io.colmap_model import SparseROI, filter_text_model_to_roi
-from openreef.pipeline.stages import sparse_model_identity, sparse_model_score
+from openreef.pipeline.stages import active_dense_input, sparse_model_identity, sparse_model_score
 
 
 def sparse_colmap(args: argparse.Namespace) -> int:
@@ -72,6 +74,13 @@ def sparse_colmap(args: argparse.Namespace) -> int:
         )
         if conversion.returncode != 0:
             return conversion.returncode
+        _create_point_profiles(
+            point_cloud,
+            getattr(args, "levels", "original"),
+            getattr(args, "medium_percent", 20),
+            getattr(args, "low_percent", 5),
+            getattr(args, "compact_percent", 1),
+        )
 
     selected_model = max(models, key=sparse_model_score)
     selected_link = output / "selected"
@@ -86,6 +95,155 @@ def sparse_colmap(args: argparse.Namespace) -> int:
         f"{images:,} registered images, {points:,} points",
         flush=True,
     )
+    return 0
+
+
+def _create_point_profiles(
+    source: Path,
+    levels_value: str,
+    medium_percent: int,
+    low_percent: int,
+    compact_percent: int,
+) -> None:
+    """Create requested point/splat profiles while preserving every PLY property."""
+    levels = {item.strip() for item in levels_value.split(",") if item.strip()}
+    percentages = {
+        "medium": medium_percent,
+        "low": low_percent,
+        "compact": compact_percent,
+    }
+    outputs: dict[str, tuple[Path, float]] = {}
+    for level, percent in percentages.items():
+        if level not in levels:
+            continue
+        destination = source.with_name(f"{source.stem}_{level}{source.suffix}")
+        if level == "compact" and source.stat().st_size <= WEB_COMPACT_TARGET:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            print(
+                f"Created Compact output without point loss: {destination.name} "
+                f"({source.stat().st_size / 1024**2:.1f} MB)",
+                flush=True,
+            )
+            continue
+        fraction = percent / 100
+        if level == "compact":
+            fraction = min(
+                fraction,
+                WEB_COMPACT_TARGET / max(1, source.stat().st_size) * 0.9,
+            )
+        outputs[level] = (
+            destination,
+            fraction,
+        )
+    if outputs:
+        _write_dense_previews(source, outputs)
+
+
+def gaussian_opensplat(args: argparse.Namespace) -> int:
+    """Run OpenSplat, then create the selected point-count output profiles."""
+    conversion_result = _prepare_gaussian_colmap_input(args)
+    if conversion_result != 0:
+        return conversion_result
+    command = [
+        args.executable,
+        args.input,
+        "--output",
+        args.output,
+        "--output-cameras",
+        args.output_cameras,
+        "--num-iters",
+        str(args.num_iters),
+        "--downscale-factor",
+        str(args.downscale_factor),
+        "--max-gaussians",
+        str(args.max_gaussians),
+        "--save-every",
+        str(args.save_every),
+    ]
+    if args.resume:
+        command.extend(("--resume", args.resume))
+    if args.center:
+        command.append("--center")
+    if args.cpu:
+        command.append("--cpu")
+    if args.no_gpu_cache:
+        command.append("--no-gpu-cache")
+    process = subprocess.Popen(command)
+
+    def forward_signal(signum: int, _frame: object) -> None:
+        if process.poll() is None:
+            process.send_signal(signum)
+
+    signal.signal(signal.SIGTERM, forward_signal)
+    signal.signal(signal.SIGINT, forward_signal)
+    return_code = process.wait()
+    if return_code != 0:
+        return return_code
+    output = Path(args.output)
+    if not output.is_file():
+        print(f"OpenSplat finished without {output}", flush=True)
+        return 1
+    _create_point_profiles(
+        output,
+        args.levels,
+        args.medium_percent,
+        args.low_percent,
+        args.compact_percent,
+    )
+    return 0
+
+
+def _prepare_gaussian_colmap_input(args: argparse.Namespace) -> int:
+    """Convert a filtered TXT crop to the binary COLMAP model OpenSplat requires."""
+    text_value = getattr(args, "colmap_text_input", "")
+    binary_value = getattr(args, "colmap_binary_output", "")
+    if not text_value or not binary_value:
+        return 0
+
+    text_model = Path(text_value)
+    binary_model = Path(binary_value)
+    text_files = tuple(text_model / name for name in ("cameras.txt", "images.txt", "points3D.txt"))
+    if not all(path.is_file() for path in text_files):
+        print(f"Cropped COLMAP text model is incomplete: {text_model}", flush=True)
+        return 1
+
+    binary_files = tuple(
+        binary_model / name for name in ("cameras.bin", "images.bin", "points3D.bin")
+    )
+    source_mtime = max(path.stat().st_mtime_ns for path in text_files)
+    if all(
+        path.is_file() and path.stat().st_mtime_ns >= source_mtime
+        for path in binary_files
+    ):
+        print("Using existing binary cropped COLMAP model", flush=True)
+        return 0
+
+    temporary = binary_model.with_name(f".{binary_model.name}.openreef-tmp")
+    shutil.rmtree(temporary, ignore_errors=True)
+    temporary.mkdir(parents=True)
+    print("Converting cropped COLMAP model to OpenSplat binary format", flush=True)
+    result = subprocess.run(
+        [
+            args.colmap_executable,
+            "model_converter",
+            "--input_path",
+            str(text_model),
+            "--output_path",
+            str(temporary),
+            "--output_type",
+            "BIN",
+        ],
+        check=False,
+    )
+    if result.returncode != 0 or not all(
+        (temporary / path.name).is_file() for path in binary_files
+    ):
+        shutil.rmtree(temporary, ignore_errors=True)
+        print("COLMAP did not create a complete binary crop model", flush=True)
+        return result.returncode or 1
+    shutil.rmtree(binary_model, ignore_errors=True)
+    temporary.replace(binary_model)
     return 0
 
 
@@ -153,9 +311,10 @@ def import_openmvs(args: argparse.Namespace) -> int:
             )
         else:
             raw_model = openmvs / "colmap_txt"
-            roi_model = openmvs / "colmap_roi"
+            roi_workspace = openmvs / "colmap_roi"
+            roi_model = roi_workspace / "sparse"
             shutil.rmtree(raw_model, ignore_errors=True)
-            shutil.rmtree(roi_model, ignore_errors=True)
+            shutil.rmtree(roi_workspace, ignore_errors=True)
             raw_model.mkdir(parents=True)
             conversion = subprocess.run(
                 [
@@ -177,7 +336,7 @@ def import_openmvs(args: argparse.Namespace) -> int:
                 print("The processing ROI retained no COLMAP points", flush=True)
                 return 1
             print(f"Applying processing ROI ({retained:,} sparse points retained)", flush=True)
-            input_model = roi_model
+            input_model = roi_workspace
             roi_payload = json.loads(roi_path.read_text(encoding="utf-8"))
 
     command = [
@@ -254,6 +413,13 @@ def dense_multi(args: argparse.Namespace) -> int:
         ),
         "medium": (openmvs / "scene_dense_medium.ply", args.medium_percent / 100),
         "low": (openmvs / "scene_dense_low.ply", args.low_percent / 100),
+        "compact": (
+            openmvs / "scene_dense_compact.ply",
+            min(
+            getattr(args, "compact_percent", 1) / 100,
+                WEB_COMPACT_TARGET / max(1, source.stat().st_size) * 0.9,
+            ),
+        ),
     }
     selected = {
         name: value
@@ -266,6 +432,7 @@ def dense_multi(args: argparse.Namespace) -> int:
         "original": args.original_percent,
         "medium": args.medium_percent,
         "low": args.low_percent,
+        "compact": getattr(args, "compact_percent", 1),
     }
     (openmvs / "scene_dense_levels.json").write_text(
         json.dumps(
@@ -287,7 +454,7 @@ def _write_dense_previews(
     outputs: dict[str, tuple[Path, float]],
 ) -> None:
     """Stream point-sampled PLY copies while preserving OpenMVS view metadata."""
-    print(f"Loading High cloud once to make {len(outputs)} viewing preview(s)", flush=True)
+    print(f"Loading source PLY once to make {len(outputs)} size profile(s)", flush=True)
     with source.open("rb") as handle:
         header, point_count, properties = _read_binary_ply_header(handle)
         record_layout = _compile_ply_layout(properties)
@@ -442,6 +609,7 @@ def mesh_multi(args: argparse.Namespace) -> int:
         "original": args.original_percent,
         "medium": args.medium_percent,
         "low": args.low_percent,
+        "compact": getattr(args, "compact_percent", 1),
     }
     cloud_names = {
         "original": "scene_dense.ply"
@@ -449,17 +617,20 @@ def mesh_multi(args: argparse.Namespace) -> int:
         else "scene_dense_original.ply",
         "medium": "scene_dense_medium.ply",
         "low": "scene_dense_low.ply",
+        "compact": "scene_dense_compact.ply",
     }
     mesh_names = {
         "original": "scene_mesh.mvs",
         "medium": "scene_mesh_medium.mvs",
         "low": "scene_mesh_low.mvs",
+        "compact": "scene_mesh_compact.mvs",
     }
     for index, level in enumerate(levels, start=1):
         cloud = openmvs / cloud_names[level]
         if not cloud.is_file():
             print(f"Missing selected dense cloud: {cloud}", flush=True)
             return 1
+        cloud = active_dense_input(cloud)
         command = [
             args.executable,
             "scene_dense.mvs",
@@ -472,7 +643,8 @@ def mesh_multi(args: argparse.Namespace) -> int:
         ]
         print(
             f"[{index}/{len(levels)}] Reconstructing {level.title()} surface mesh "
-            f"from the {percentages[level]}% dense cloud",
+            f"from the {percentages[level]}% dense cloud"
+            + (" (Viewer crop)" if "_cropped" in cloud.stem else ""),
             flush=True,
         )
         result = subprocess.run(command, cwd=openmvs, check=False)
@@ -489,11 +661,13 @@ def texture_multi(args: argparse.Namespace) -> int:
         "original": "scene_mesh.ply",
         "medium": "scene_mesh_medium.ply",
         "low": "scene_mesh_low.ply",
+        "compact": "scene_mesh_compact.ply",
     }
     output_names = {
         "original": "scene_mesh_textured.mvs",
         "medium": "scene_mesh_medium_textured.mvs",
         "low": "scene_mesh_low_textured.mvs",
+        "compact": "scene_mesh_compact_textured.mvs",
     }
     for index, level in enumerate(levels, start=1):
         mesh = openmvs / mesh_names[level]
@@ -534,6 +708,19 @@ def texture_multi(args: argparse.Namespace) -> int:
         if not expected.is_file():
             print(f"TextureMesh did not create its expected output: {expected}", flush=True)
             return 1
+        if level == "compact":
+            temporary = expected.with_name(f".{expected.stem}.openreef-compact.glb")
+            try:
+                make_compact_glb(expected, temporary, max_bytes=WEB_COMPACT_TARGET)
+                temporary.replace(expected)
+            except (OSError, TypeError, ValueError) as exc:
+                temporary.unlink(missing_ok=True)
+                print(f"Could not reduce Compact GLB below 100 MB: {exc}", flush=True)
+                return 1
+            print(
+                f"Compact GLB saved at {expected.stat().st_size / 1024**2:.1f} MB",
+                flush=True,
+            )
     return 0
 
 
@@ -554,6 +741,10 @@ def main() -> int:
     sparse.add_argument("--images", required=True)
     sparse.add_argument("--output", required=True)
     sparse.add_argument("--cores", type=int, required=True)
+    sparse.add_argument("--levels", default="original")
+    sparse.add_argument("--medium-percent", type=int, default=20)
+    sparse.add_argument("--low-percent", type=int, default=5)
+    sparse.add_argument("--compact-percent", type=int, default=1)
     undistort = subparsers.add_parser("undistort-colmap")
     undistort.add_argument("--executable", required=True)
     undistort.add_argument("--images", required=True)
@@ -575,6 +766,7 @@ def main() -> int:
     dense.add_argument("--original-percent", type=int, required=True)
     dense.add_argument("--medium-percent", type=int, required=True)
     dense.add_argument("--low-percent", type=int, required=True)
+    dense.add_argument("--compact-percent", type=int, default=1)
     mesh = subparsers.add_parser("mesh-multi")
     mesh.add_argument("--executable", required=True)
     mesh.add_argument("--openmvs-folder", required=True)
@@ -582,6 +774,7 @@ def main() -> int:
     mesh.add_argument("--original-percent", type=int, required=True)
     mesh.add_argument("--medium-percent", type=int, required=True)
     mesh.add_argument("--low-percent", type=int, required=True)
+    mesh.add_argument("--compact-percent", type=int, default=1)
     mesh.add_argument("--cores", type=int, required=True)
     texture = subparsers.add_parser("texture-multi")
     texture.add_argument("--executable", required=True)
@@ -593,6 +786,26 @@ def main() -> int:
     texture.add_argument("--sharpness-weight", type=float, required=True)
     texture.add_argument("--global-seam-leveling", type=int, required=True)
     texture.add_argument("--local-seam-leveling", type=int, required=True)
+    gaussian = subparsers.add_parser("gaussian-opensplat")
+    gaussian.add_argument("--executable", required=True)
+    gaussian.add_argument("--input", required=True)
+    gaussian.add_argument("--colmap-executable", default="")
+    gaussian.add_argument("--colmap-text-input", default="")
+    gaussian.add_argument("--colmap-binary-output", default="")
+    gaussian.add_argument("--output", required=True)
+    gaussian.add_argument("--output-cameras", required=True)
+    gaussian.add_argument("--num-iters", type=int, required=True)
+    gaussian.add_argument("--downscale-factor", type=float, required=True)
+    gaussian.add_argument("--max-gaussians", type=int, required=True)
+    gaussian.add_argument("--save-every", type=int, required=True)
+    gaussian.add_argument("--resume", default="")
+    gaussian.add_argument("--center", action="store_true")
+    gaussian.add_argument("--cpu", action="store_true")
+    gaussian.add_argument("--no-gpu-cache", action="store_true")
+    gaussian.add_argument("--levels", default="original")
+    gaussian.add_argument("--medium-percent", type=int, default=20)
+    gaussian.add_argument("--low-percent", type=int, default=5)
+    gaussian.add_argument("--compact-percent", type=int, default=1)
     args = parser.parse_args()
     if args.task == "import-openmvs":
         return import_openmvs(args)
@@ -606,6 +819,8 @@ def main() -> int:
         return mesh_multi(args)
     if args.task == "texture-multi":
         return texture_multi(args)
+    if args.task == "gaussian-opensplat":
+        return gaussian_opensplat(args)
     return 2
 
 

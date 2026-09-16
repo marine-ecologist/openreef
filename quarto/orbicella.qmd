@@ -1,0 +1,13 @@
+---
+title: "Orbicella annularis"
+title-block-style: none
+page-layout: custom
+---
+
+<div class="reef-viewer" data-model="models/patchreef/scene_mesh_compact_textured.glb" data-title="Patch reef" data-source="DJI6Run4GPSCL · compact textured mesh" data-bytes="18746692"></div>
+<script type="module" src="viewer.js"></script>
+
+
+
+<div class="reef-viewer" data-tileset="models/annularis/tiles/tileset.json" data-title="Orbicella" data-source="Orbicella annularis · full-resolution spatial 3D tiles" data-tiles="646"></div>
+<script type="module" src="tiled-viewer.js"></script>

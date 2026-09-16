@@ -1,6 +1,7 @@
 import json
 import os
 import struct
+import sys
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,6 +56,10 @@ def test_dataset_layout_and_image_count(tmp_path: Path) -> None:
     assert layout.surface_mesh == tmp_path / "openmvs" / "scene_mesh.ply"
     assert layout.models == tmp_path / "models"
     assert layout.meshes == layout.models
+    assert layout.tiled_web_export == tmp_path / "openreef-web-tiles"
+    assert layout.tiled_model_manifest == (
+        tmp_path / "models" / f"{tmp_path.name}_3d_tiles.json"
+    )
 
 
 def test_reconstruction_outputs_are_linked_into_models_folder(tmp_path: Path) -> None:
@@ -104,6 +109,19 @@ def test_textured_mesh_levels_are_linked_without_name_collisions(tmp_path: Path)
     assert f"{tmp_path.name}_textured_mesh_original.glb" in names
     assert f"{tmp_path.name}_textured_mesh_medium.glb" in names
     assert f"{tmp_path.name}_textured_mesh_low.glb" in names
+
+
+def test_gaussian_output_is_linked_into_models_folder(tmp_path: Path) -> None:
+    layout = DatasetLayout(tmp_path)
+    layout.gaussian.mkdir(parents=True)
+    layout.gaussian_output.touch()
+
+    links = sync_model_links(layout)
+
+    destination = layout.models / f"{tmp_path.name}_gaussian.ply"
+    assert destination in links
+    assert destination.is_symlink()
+    assert destination.resolve() == layout.gaussian_output.resolve()
 
 
 def test_roi_change_invalidates_openmvs_outputs(tmp_path: Path) -> None:
@@ -207,6 +225,14 @@ def test_sparse_stage_exports_a_named_point_cloud(
         str(tmp_path / "colmap" / "sparse"),
         "--cores",
         "4",
+        "--levels",
+        "original",
+        "--medium-percent",
+        "20",
+        "--low-percent",
+        "5",
+        "--compact-percent",
+        "1",
     )
 
 
@@ -336,6 +362,197 @@ def test_texture_command_and_output_detection(
     assert stage_output_exists(StageKey.TEXTURE, layout, options)
 
 
+def test_gaussian_command_bridges_undistorted_colmap_input(
+    tmp_path: Path,
+) -> None:
+    layout = DatasetLayout(tmp_path)
+    prepare_selected_sparse_chain(layout)
+    executable = tmp_path / "opensplat"
+    executable.touch()
+    options = PipelineOptions(
+        cores=10,
+        gaussian_executable=str(executable),
+        gaussian_iterations=7_000,
+        gaussian_downscale=4.0,
+        gaussian_max_points=2_000_000,
+        gaussian_save_every=1_000,
+    )
+
+    command = build_stage_command(StageKey.GAUSSIAN, layout, options)
+
+    assert command.program == sys.executable
+    assert "gaussian-opensplat" in command.arguments
+    assert command.arguments[command.arguments.index("--executable") + 1] == str(executable)
+    assert command.arguments[command.arguments.index("--input") + 1] == str(
+        layout.gaussian_input
+    )
+    assert command.arguments[command.arguments.index("--output") + 1] == str(
+        layout.gaussian_output
+    )
+    assert command.arguments[command.arguments.index("--num-iters") + 1] == "7000"
+    assert command.arguments[command.arguments.index("--downscale-factor") + 1] == "4.0"
+    assert (layout.gaussian_input / "images").resolve() == (layout.dense / "images").resolve()
+    assert (layout.gaussian_input / "sparse" / "0").resolve() == (
+        layout.dense / "sparse"
+    ).resolve()
+
+    layout.gaussian_output.touch()
+    assert stage_output_exists(StageKey.GAUSSIAN, layout, options)
+
+
+def test_gaussian_command_resumes_latest_checkpoint(tmp_path: Path) -> None:
+    layout = DatasetLayout(tmp_path)
+    prepare_selected_sparse_chain(layout)
+    executable = tmp_path / "opensplat"
+    executable.touch()
+    layout.gaussian.mkdir(parents=True)
+    checkpoint = layout.gaussian / f"{layout.gaussian_output.stem}_6000.ply"
+    checkpoint.touch()
+    options = PipelineOptions(cores=4, gaussian_executable=str(executable))
+
+    command = build_stage_command(StageKey.GAUSSIAN, layout, options)
+
+    assert command.arguments[command.arguments.index("--resume") + 1] == str(checkpoint)
+
+
+def test_gaussian_command_uses_current_sparse_roi_model(tmp_path: Path) -> None:
+    layout = DatasetLayout(tmp_path)
+    prepare_selected_sparse_chain(layout)
+    executable = tmp_path / "opensplat"
+    executable.touch()
+    layout.models.mkdir(parents=True)
+    roi = {
+        "bounds": [0, 1, 0, 1, 0, 1],
+        "selected_points": 20,
+        "total_points": 100,
+        "created_at": "2026-09-11T00:00:00+10:00",
+        "sparse_model": "0",
+    }
+    layout.roi.write_text(json.dumps(roi), encoding="utf-8")
+    layout.imported_roi_state.write_text(
+        json.dumps({"roi": roi}), encoding="utf-8"
+    )
+    cropped_text_model = layout.openmvs / "colmap_roi" / "sparse"
+    cropped_text_model.mkdir(parents=True)
+    cropped_binary_model = layout.openmvs / "colmap_roi_binary"
+
+    options = PipelineOptions(cores=4, gaussian_executable=str(executable))
+    command = build_stage_command(StageKey.GAUSSIAN, layout, options)
+
+    assert (
+        layout.gaussian_input / "sparse" / "0"
+    ).resolve() == cropped_binary_model.resolve()
+    assert command.arguments[command.arguments.index("--colmap-text-input") + 1] == str(
+        cropped_text_model
+    )
+    assert command.arguments[
+        command.arguments.index("--colmap-binary-output") + 1
+    ] == str(cropped_binary_model)
+    layout.gaussian_output.touch()
+    assert stage_output_exists(StageKey.GAUSSIAN, layout, options)
+
+    changed_roi = dict(roi, bounds=[0, 2, 0, 2, 0, 2])
+    layout.roi.write_text(json.dumps(changed_roi), encoding="utf-8")
+    assert not stage_output_exists(StageKey.GAUSSIAN, layout, options)
+
+
+def test_gaussian_task_converts_cropped_colmap_model_to_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openreef.pipeline.tasks import _prepare_gaussian_colmap_input
+
+    text_model = tmp_path / "text"
+    text_model.mkdir()
+    for name in ("cameras.txt", "images.txt", "points3D.txt"):
+        (text_model / name).write_text(f"# {name}\n", encoding="utf-8")
+    binary_model = tmp_path / "binary"
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        output = Path(command[command.index("--output_path") + 1])
+        for name in ("cameras.bin", "images.bin", "points3D.bin"):
+            (output / name).touch()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("openreef.pipeline.tasks.subprocess.run", run)
+    result = _prepare_gaussian_colmap_input(
+        Namespace(
+            colmap_executable="/colmap",
+            colmap_text_input=str(text_model),
+            colmap_binary_output=str(binary_model),
+        )
+    )
+
+    assert result == 0
+    assert commands[0][-1] == "BIN"
+    assert all(
+        (binary_model / name).is_file()
+        for name in ("cameras.bin", "images.bin", "points3D.bin")
+    )
+
+
+def test_openmvs_roi_workspace_contains_sparse_subfolder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openreef.pipeline.tasks import import_openmvs
+
+    dense = tmp_path / "colmap" / "dense"
+    (dense / "images").mkdir(parents=True)
+    (dense / "sparse").mkdir()
+    openmvs = tmp_path / "openmvs"
+    models = tmp_path / "models"
+    models.mkdir()
+    roi = {
+        "bounds": [-1, 1, -1, 1, -1, 1],
+        "selected_points": 1,
+        "total_points": 2,
+        "created_at": "2026-09-12T00:00:00+10:00",
+        "sparse_model": "0",
+    }
+    roi_path = models / "reef_roi.json"
+    roi_path.write_text(json.dumps(roi), encoding="utf-8")
+    interface_inputs: list[Path] = []
+
+    def run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        if "model_converter" in command:
+            output = Path(command[command.index("--output_path") + 1])
+            (output / "cameras.txt").write_text(
+                "# cameras\n1 PINHOLE 100 100 50 50 50 50\n",
+                encoding="utf-8",
+            )
+            (output / "points3D.txt").write_text(
+                "# points\n1 0 0 0 255 0 0 0.1 7 0\n",
+                encoding="utf-8",
+            )
+            (output / "images.txt").write_text(
+                "# images\n7 1 0 0 0 0 0 0 1 reef.jpg\n10 10 1\n",
+                encoding="utf-8",
+            )
+        else:
+            interface_inputs.append(Path(command[command.index("-i") + 1]))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("openreef.pipeline.tasks.subprocess.run", run)
+    result = import_openmvs(
+        Namespace(
+            executable="/InterfaceCOLMAP",
+            dense_folder=str(dense),
+            openmvs_folder=str(openmvs),
+            cores=8,
+            colmap_executable="/colmap",
+            roi=str(roi_path),
+            sparse_model="0",
+        )
+    )
+
+    assert result == 0
+    assert interface_inputs == [openmvs / "colmap_roi"]
+    assert (interface_inputs[0] / "sparse" / "cameras.txt").is_file()
+    assert (interface_inputs[0] / "sparse" / "images.txt").is_file()
+    assert (interface_inputs[0] / "sparse" / "points3D.txt").is_file()
+
+
 def test_dense_command_requests_optional_viewing_clouds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -434,6 +651,20 @@ def test_dense_preview_preserves_openmvs_camera_view_lists(tmp_path: Path) -> No
     assert struct.unpack_from("<BII", vertex_data, 45 + 27) == (2, 3, 13)
 
 
+def test_compact_point_output_is_lossless_when_source_is_already_small(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openreef.pipeline import tasks
+
+    source = tmp_path / "reef_gaussian.ply"
+    source.write_bytes(b"already below the sharing limit")
+    monkeypatch.setattr(tasks, "WEB_COMPACT_TARGET", 100)
+
+    tasks._create_point_profiles(source, "compact", 20, 5, 1)
+
+    assert (tmp_path / "reef_gaussian_compact.ply").read_bytes() == source.read_bytes()
+
+
 def test_mesh_multi_passes_each_dense_cloud_to_openmvs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -471,6 +702,36 @@ def test_mesh_multi_passes_each_dense_cloud_to_openmvs(
         "scene_mesh_medium.mvs",
         "scene_mesh_low.mvs",
     ]
+
+
+def test_mesh_multi_prefers_newer_viewer_crop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openreef.pipeline.tasks import mesh_multi
+
+    (tmp_path / "scene_dense.ply").touch()
+    (tmp_path / "scene_dense_cropped.ply").touch()
+    commands: list[list[str]] = []
+
+    def record(command: list[str], **kwargs: object) -> SimpleNamespace:
+        commands.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("openreef.pipeline.tasks.subprocess.run", record)
+    result = mesh_multi(
+        Namespace(
+            executable="/ReconstructMesh",
+            openmvs_folder=str(tmp_path),
+            levels="original",
+            original_percent=100,
+            medium_percent=20,
+            low_percent=5,
+            cores=8,
+        )
+    )
+
+    assert result == 0
+    assert commands[0][commands[0].index("-p") + 1] == "scene_dense_cropped.ply"
 
 
 def test_texture_multi_exports_each_selected_mesh_as_glb(

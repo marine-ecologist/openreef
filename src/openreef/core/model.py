@@ -20,6 +20,7 @@ class ModelPart:
 class ModelDocument:
     source: Path
     parts: tuple[ModelPart, ...]
+    material_source: Path | None = None
 
     @property
     def stats(self) -> ModelStats:

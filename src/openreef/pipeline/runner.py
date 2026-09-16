@@ -30,6 +30,7 @@ class PipelineRunner(QObject):
     stage_changed = Signal(str, str, str)
     current_stage_changed = Signal(str)
     progress_changed = Signal(int, int)
+    stage_progress = Signal(str, int, int)
     running_changed = Signal(bool)
     job_finished = Signal(bool, str)
     artifact_ready = Signal(str)
@@ -145,7 +146,17 @@ class PipelineRunner(QObject):
     def _read_output(self) -> None:
         raw = bytes(self._process.readAllStandardOutput()).decode("utf-8", errors="replace")
         if raw:
-            self.output_received.emit(strip_ansi(raw))
+            clean = strip_ansi(raw)
+            self.output_received.emit(clean)
+            if self._active == StageKey.GAUSSIAN and self._options is not None:
+                matches = re.findall(r"\bStep\s+(\d+):.*?\[(\d+)%\]", clean)
+                if matches:
+                    step = int(matches[-1][0])
+                    self.stage_progress.emit(
+                        StageKey.GAUSSIAN.value,
+                        min(step, self._options.gaussian_iterations),
+                        self._options.gaussian_iterations,
+                    )
 
     def _process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         self._read_output()
@@ -196,6 +207,8 @@ class PipelineRunner(QObject):
                 if output.is_file():
                     self.artifact_ready.emit(str(output))
                     break
+        elif stage == StageKey.GAUSSIAN and self._layout.gaussian_output.is_file():
+            self.artifact_ready.emit(str(self._layout.gaussian_output))
         self._start_next()
 
     def _process_error(self, error: QProcess.ProcessError) -> None:

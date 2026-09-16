@@ -1,0 +1,46 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - "*.qmd"
+  resources:
+    - models/annularis/tiles/**
+    - models/natans/tiles/**
+    - models/patchreef/scene_mesh_compact_textured.glb
+    - vendor/**
+    - viewer.js
+    - tiled-viewer.js
+    - openreef-icon.png
+
+
+website:
+  title: "OpenReef"
+  favicon: favicon.svg
+
+  navbar:
+    logo: openreef-icon.png
+    background: "#444444"
+    foreground: light
+
+    left:
+      - text: "Code"
+        href: https://github.com/marine-ecologist/openreef/
+      - text: "Examples"
+        menu:
+          - href: orbicella.qmd
+            text: "Orbicella"
+          - href: colpophyllia.qmd
+            text: "Colpophyllia"
+          - href: patchreef.qmd
+            text: "Patch reef"
+    right:
+      - icon: github
+        href: https://github.com/marine-ecologist/openreef
+        aria-label: "OpenReef on GitHub"
+        
+format:
+  html:
+    theme: darkly
+    css: styles.css
+    toc: false
+    include-in-header: _includes/importmap.html

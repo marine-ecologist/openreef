@@ -50,6 +50,20 @@ def pan_camera(camera: Any, dx: float, dy: float, viewport_height: int) -> None:
     camera.focal_point = tuple(focal_point[i] + offset[i] for i in range(3))
 
 
+def orthomosaic_image_size(
+    longest_edge: int,
+    viewport_width: int,
+    viewport_height: int,
+) -> tuple[int, int]:
+    """Scale the current viewport aspect ratio to a requested longest image edge."""
+
+    if longest_edge < 1 or viewport_width < 1 or viewport_height < 1:
+        raise ValueError("Orthomosaic image and viewport dimensions must be positive")
+    if viewport_width >= viewport_height:
+        return longest_edge, max(1, round(longest_edge * viewport_height / viewport_width))
+    return max(1, round(longest_edge * viewport_width / viewport_height)), longest_edge
+
+
 def _vector3(value: object, field: str) -> tuple[float, float, float]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) != 3:
         raise ValueError(f"'{field}' must contain exactly three numbers")

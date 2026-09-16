@@ -8,6 +8,39 @@ from typing import Any
 from openreef.core.model import ModelDocument
 
 DISPLAY_MODES = ("Solid", "Wireframe", "Solid + wireframe")
+SPLAT_DISPLAY_MODE = "Gaussian splat"
+SPLAT_RGB = "OpenReef splat RGB"
+SPLAT_SCALE = "OpenReef splat scale"
+SPLAT_OPACITY = "OpenReef splat opacity"
+SPLAT_SCALE_FACTOR = 0.3
+_GAUSSIAN_ARRAYS = {
+    "f_dc_0",
+    "f_dc_1",
+    "f_dc_2",
+    "opacity",
+    "scale_0",
+    "scale_1",
+    "scale_2",
+    "rot_0",
+    "rot_1",
+    "rot_2",
+    "rot_3",
+}
+
+
+def _actor_identity(actor: Any) -> object:
+    """Return a stable VTK identity even when Python wrapper objects are recreated."""
+    if hasattr(actor, "GetAddressAsString"):
+        return actor.GetAddressAsString("")
+    return id(actor)
+
+
+def is_gaussian_splat(document: ModelDocument) -> bool:
+    """Return whether a document carries the standard 3D Gaussian attributes."""
+    return any(
+        _GAUSSIAN_ARRAYS.issubset(set(getattr(part.dataset, "point_data", {}).keys()))
+        for part in document.parts
+    )
 
 
 class SceneController:
@@ -20,15 +53,33 @@ class SceneController:
         self._glb_actors: list[Any] = []
         self._glb_source: Path | None = None
         self._display_mode = "Wireframe"
-        self._point_size = 5
-        self.plotter.set_background("#132028", top="#071015")
+        self._point_size = 1
+        self._is_splat = False
+        self.set_theme(True)
         self.plotter.add_axes(line_width=2)
 
-    def set_document(self, document: ModelDocument) -> None:
+    def set_theme(self, dark: bool) -> None:
+        from openreef.ui.theme import viewport_background
+
+        color, top = viewport_background(dark)
+        self.plotter.set_background(color, top=top)
+        self.plotter.render()
+
+    def set_document(self, document: ModelDocument, *, render_splat: bool = True) -> None:
         self.plotter.clear()
         self.plotter.add_axes(line_width=2)
         self.document = document
         self._actors.clear()
+        self._is_splat = is_gaussian_splat(document)
+
+        if self._is_splat:
+            self._glb_actors.clear()
+            self._glb_source = None
+            if render_splat:
+                for part in document.parts:
+                    self._add_gaussian_splats(part.dataset, part.name)
+                self.fit_to_view()
+            return
 
         if document.material_source is not None:
             material_source = document.material_source.resolve()
@@ -57,7 +108,7 @@ class SceneController:
                 actor = self.plotter.add_points(
                     part.dataset,
                     name=part.name,
-                    color="#62c8cf" if not color_options else None,
+                    color="#6ea0ff" if not color_options else None,
                     point_size=self._point_size,
                     render_points_as_spheres=True,
                     **color_options,
@@ -66,7 +117,7 @@ class SceneController:
                 actor = self.plotter.add_mesh(
                     part.dataset,
                     name=part.name,
-                    color="#61b8c8" if not color_options else None,
+                    color="#5b8cff" if not color_options else None,
                     smooth_shading=False,
                     **color_options,
                 )
@@ -75,16 +126,64 @@ class SceneController:
         self.set_display_mode(self._display_mode)
         self.fit_to_view()
 
+    @property
+    def is_splat(self) -> bool:
+        return self._is_splat
+
+    def _add_gaussian_splats(self, dataset: Any, name: str) -> None:
+        """Render OpenSplat attributes with VTK's embedded GPU Gaussian mapper."""
+        import numpy as np
+
+        dc = np.column_stack(
+            (
+                np.asarray(dataset.point_data["f_dc_0"]),
+                np.asarray(dataset.point_data["f_dc_1"]),
+                np.asarray(dataset.point_data["f_dc_2"]),
+            )
+        )
+        rgb = np.clip(0.5 + 0.28209479177387814 * dc, 0.0, 1.0)
+        opacity_logits = np.asarray(dataset.point_data["opacity"], dtype=float)
+        opacity = 1.0 / (1.0 + np.exp(-np.clip(opacity_logits, -20.0, 20.0)))
+        log_scales = np.column_stack(
+            tuple(np.asarray(dataset.point_data[f"scale_{index}"]) for index in range(3))
+        )
+        scale = np.exp(np.clip(log_scales, -20.0, 20.0)).max(axis=1)
+        finite_scale = scale[np.isfinite(scale)]
+        if finite_scale.size:
+            # A few unconstrained outliers can otherwise cover the entire view.
+            scale = np.minimum(scale, np.percentile(finite_scale, 99.0))
+        rgba = np.column_stack((rgb, opacity))
+        dataset.point_data[SPLAT_RGB] = np.round(rgba * 255).astype(np.uint8)
+        dataset.point_data[SPLAT_SCALE] = scale.astype(np.float32)
+        dataset.point_data[SPLAT_OPACITY] = opacity.astype(np.float32)
+
+        actor = self.plotter.add_points(
+            dataset,
+            name=name,
+            style="points_gaussian",
+            scalars=SPLAT_RGB,
+            rgba=True,
+            emissive=False,
+            point_size=self._point_size,
+        )
+        mapper = actor.GetMapper()
+        if hasattr(mapper, "SetScaleArray"):
+            mapper.SetScaleArray(SPLAT_SCALE)
+        if hasattr(mapper, "SetScaleFactor"):
+            mapper.SetScaleFactor(SPLAT_SCALE_FACTOR * self._point_size)
+        self._actors.append((actor, "gaussian-splat"))
+
     def _import_textured_glb(self, source: Path) -> bool:
         """Let VTK's glTF importer retain embedded materials and texture images."""
         try:
             renderer = self.plotter.renderer
-            existing = {id(actor) for actor in renderer.actors.values()}
+            existing_actors = list(renderer.actors.values())
+            existing = {_actor_identity(actor) for actor in existing_actors}
             self.plotter.import_gltf(source, set_camera=False)
             imported = [
                 actor
                 for actor in renderer.actors.values()
-                if id(actor) not in existing
+                if _actor_identity(actor) not in existing
                 and hasattr(actor, "GetProperty")
                 and hasattr(actor.GetProperty(), "SetRepresentationToWireframe")
             ]
@@ -130,7 +229,11 @@ class SceneController:
     def set_point_size(self, size: int) -> None:
         self._point_size = size
         for actor, kind in self._actors:
-            if kind == "point-cloud":
+            if kind == "gaussian-splat":
+                mapper = actor.GetMapper()
+                if hasattr(mapper, "SetScaleFactor"):
+                    mapper.SetScaleFactor(SPLAT_SCALE_FACTOR * size)
+            elif kind == "point-cloud":
                 actor.GetProperty().SetPointSize(size)
         self.plotter.render()
 

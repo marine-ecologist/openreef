@@ -1,0 +1,8 @@
+---
+title: "Colpophyllia natans"
+title-block-style: none
+page-layout: custom
+---
+
+<div class="reef-viewer" data-tileset="models/natans/tiles/tileset.json" data-title="Colpophyllia" data-source="Colpophyllia natans · full-resolution spatial 3D tiles" data-tiles="304"></div>
+<script type="module" src="tiled-viewer.js"></script>

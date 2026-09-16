@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from openreef.core.camera import CameraView, pan_camera
+from openreef.core.camera import CameraView, orthomosaic_image_size, pan_camera
 
 
 class FakeCamera:
@@ -63,3 +63,18 @@ def test_screen_pan_moves_camera_and_focal_point_together() -> None:
     assert tuple(camera.position[i] - camera.focal_point[i] for i in range(3)) == pytest.approx(
         (0.0, 0.0, 10.0)
     )
+
+
+@pytest.mark.parametrize(
+    ("viewport", "expected"),
+    (((1600, 900), (4096, 2304)), ((900, 1600), (2304, 4096)), ((1, 1), (4096, 4096))),
+)
+def test_orthomosaic_image_size_preserves_viewport_aspect(
+    viewport: tuple[int, int], expected: tuple[int, int]
+) -> None:
+    assert orthomosaic_image_size(4096, *viewport) == expected
+
+
+def test_orthomosaic_image_size_rejects_invalid_dimensions() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        orthomosaic_image_size(4096, 0, 900)

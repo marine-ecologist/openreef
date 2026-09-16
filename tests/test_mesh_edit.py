@@ -68,6 +68,42 @@ def test_delete_inside_lasso_retains_surrounding_mesh() -> None:
     assert 0 < result.document.stats.cells < document.stats.cells
 
 
+def test_textured_glb_lasso_keeps_complete_triangles_and_uv_coordinates() -> None:
+    from pyvista import PolyData
+
+    mesh = plane_mesh()
+    texture_coordinates = np.column_stack(
+        (np.arange(mesh.n_points, dtype=float), -np.arange(mesh.n_points, dtype=float))
+    )
+    mesh.point_data["TEXCOORD_0"] = texture_coordinates
+    document = ModelDocument(
+        Path("reef.glb"),
+        (ModelPart("Reef", mesh, "mesh"),),
+        material_source=Path("reef.glb"),
+    )
+    operation = LassoOperation.capture(
+        camera(),
+        (200, 200),
+        [(50.0, 50.0), (150.0, 50.0), (150.0, 150.0), (50.0, 150.0)],
+        keep_inside=True,
+    )
+
+    result = apply_lasso_operation(document, operation)
+    trimmed = result.document.parts[0].dataset
+
+    assert isinstance(trimmed, PolyData)
+    assert 0 < trimmed.n_cells < mesh.n_cells
+    assert trimmed.active_texture_coordinates is not None
+    original_vertices = {
+        tuple(row)
+        for row in np.column_stack((np.asarray(mesh.points), texture_coordinates))
+    }
+    retained_vertices = np.column_stack(
+        (np.asarray(trimmed.points), np.asarray(trimmed.point_data["TEXCOORD_0"]))
+    )
+    assert all(tuple(row) in original_vertices for row in retained_vertices)
+
+
 def test_save_document_writes_ply(tmp_path: Path) -> None:
     mesh = plane_mesh()
     document = ModelDocument(Path("reef.ply"), (ModelPart("Reef", mesh, "mesh"),))

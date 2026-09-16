@@ -73,35 +73,18 @@ class InputImagesPage(QWidget):
 
     def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
-        title_box = QVBoxLayout()
+        header.setSpacing(18)
         title = QLabel("Input Images")
         title.setObjectName("pageTitle")
-        subtitle = QLabel(
-            "Review source media, preserve originals, and prepare the images sent to COLMAP."
-        )
-        subtitle.setObjectName("pageSubtitle")
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box, 1)
-
-        dataset_box = QVBoxLayout()
-        label = QLabel("DATASET FOLDER")
-        label.setObjectName("fieldLabel")
-        row = QHBoxLayout()
+        header.addWidget(title)
         self.dataset_path = QLineEdit()
-        self.dataset_path.setPlaceholderText("Choose the dataset output folder")
+        self.dataset_path.setPlaceholderText("Dataset folder")
         self.dataset_path.setMinimumWidth(420)
         self.dataset_path.editingFinished.connect(self._dataset_edited)
         self.dataset_button = QPushButton("Choose…")
         self.dataset_button.clicked.connect(self._choose_dataset)
-        row.addWidget(self.dataset_path, 1)
-        row.addWidget(self.dataset_button)
-        self.folder_contract = QLabel("original/ → optional color correction → images/ → COLMAP")
-        self.folder_contract.setObjectName("datasetSummary")
-        dataset_box.addWidget(label)
-        dataset_box.addLayout(row)
-        dataset_box.addWidget(self.folder_contract)
-        header.addLayout(dataset_box, 2)
+        header.addWidget(self.dataset_path, 1)
+        header.addWidget(self.dataset_button)
         return header
 
     def _build_settings(self) -> QWidget:
@@ -111,6 +94,7 @@ class InputImagesPage(QWidget):
         layout.setContentsMargins(0, 0, 12, 0)
 
         source_group = QGroupBox("Source")
+        source_group.setObjectName("sourcePanel")
         source_form = QFormLayout(source_group)
         self.source_kind = QComboBox()
         self.source_kind.addItem("Existing dataset images", "existing")
@@ -128,6 +112,7 @@ class InputImagesPage(QWidget):
         layout.addWidget(source_group)
 
         options_group = QGroupBox("Preparation")
+        options_group.setObjectName("preparationPanel")
         options_form = QFormLayout(options_group)
         self.video_interval = QDoubleSpinBox()
         self.video_interval.setRange(0.1, 60.0)
@@ -149,14 +134,6 @@ class InputImagesPage(QWidget):
         self.jpeg_quality.setSuffix("%")
         options_form.addRow("JPEG quality", self.jpeg_quality)
         layout.addWidget(options_group)
-
-        note = QLabel(
-            "Original photos and extracted video frames are preserved under original/. "
-            "Sparse Cloud always reads images/. Existing images are adopted safely before rebuild."
-        )
-        note.setObjectName("pageSubtitle")
-        note.setWordWrap(True)
-        layout.addWidget(note)
 
         self.prepare_button = QPushButton("Prepare Input Images")
         self.prepare_button.setObjectName("primaryButton")
@@ -239,16 +216,15 @@ class InputImagesPage(QWidget):
         return group
 
     def _build_terminal(self) -> QGroupBox:
-        group = QGroupBox("Input processing terminal")
+        group = QGroupBox("Live processing")
         layout = QVBoxLayout(group)
         toolbar = QHBoxLayout()
-        hint = QLabel("FFmpeg extraction and image preparation output")
-        hint.setObjectName("terminalHint")
         clear = QPushButton("Clear")
-        toolbar.addWidget(hint, 1)
+        toolbar.addStretch(1)
         toolbar.addWidget(clear)
         layout.addLayout(toolbar)
         self.terminal = QPlainTextEdit()
+        self.terminal.setObjectName("processingTerminal")
         self.terminal.setReadOnly(True)
         self.terminal.setMaximumBlockCount(5000)
         self.terminal.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))

@@ -8,9 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from openreef.core.glb_edit import save_textured_glb
 from openreef.core.model import ModelDocument, ModelPart, classify_dataset, find_vertex_color
-
-LASSO_SCALAR = "__openreef_lasso_distance"
 
 
 @dataclass(frozen=True)
@@ -123,8 +122,21 @@ def signed_lasso_distance(points: np.ndarray, polygon: np.ndarray) -> np.ndarray
 def _trim_part(
     part: ModelPart,
     operation: LassoOperation,
+    *,
+    preserve_triangles: bool = False,
 ) -> ModelPart | None:
     dataset = part.dataset.copy(deep=True)
+    if part.kind == "mesh" and preserve_triangles:
+        trimmed = _trim_complete_cells(dataset, operation)
+        if trimmed is None:
+            return None
+        return ModelPart(
+            name=part.name,
+            dataset=trimmed,
+            kind=classify_dataset(trimmed),
+            vertex_color=find_vertex_color(trimmed),
+        )
+
     screen_points, valid = _project_with_matrix(
         dataset.points,
         np.asarray(operation.projection),
@@ -143,13 +155,14 @@ def _trim_part(
         for name, values in dataset.point_data.items():
             trimmed.point_data[name] = np.asarray(values)[mask]
     else:
-        dataset.point_data[LASSO_SCALAR] = distance
+        scalar_name = "__openreef_lasso_distance"
+        dataset.point_data[scalar_name] = distance
         trimmed = dataset.clip_scalar(
-            scalars=LASSO_SCALAR,
+            scalars=scalar_name,
             value=0.0,
             invert=operation.keep_inside,
         )
-        trimmed.point_data.pop(LASSO_SCALAR, None)
+        trimmed.point_data.pop(scalar_name, None)
         if int(trimmed.n_points) == 0 or int(trimmed.n_cells) == 0:
             return None
 
@@ -159,6 +172,26 @@ def _trim_part(
         kind=classify_dataset(trimmed),
         vertex_color=find_vertex_color(trimmed),
     )
+
+
+def _trim_complete_cells(dataset: Any, operation: LassoOperation) -> Any | None:
+    """Select whole source cells so GLB UV and material assignments stay intact."""
+    centers = np.asarray(dataset.cell_centers(vertex=False).points)
+    screen_centers, valid = _project_with_matrix(
+        centers,
+        np.asarray(operation.projection),
+        operation.viewport_size,
+    )
+    distance = signed_lasso_distance(screen_centers, np.asarray(operation.polygon))
+    inside = valid & (distance <= 0.0)
+    keep = inside if operation.keep_inside else ~inside
+    if not np.any(keep):
+        return None
+    remove = np.flatnonzero(~keep)
+    trimmed = dataset if not len(remove) else dataset.remove_cells(remove)
+    if int(trimmed.n_points) == 0 or int(trimmed.n_cells) == 0:
+        return None
+    return trimmed
 
 
 def trim_document(
@@ -182,14 +215,28 @@ def trim_document(
 def apply_lasso_operation(document: ModelDocument, operation: LassoOperation) -> TrimResult:
     """Replay a captured lasso operation against any aligned model resolution."""
     before = document.stats
+    preserve_triangles = document.material_source is not None
     parts = tuple(
-        trimmed for part in document.parts if (trimmed := _trim_part(part, operation)) is not None
+        trimmed
+        for part in document.parts
+        if (
+            trimmed := _trim_part(
+                part,
+                operation,
+                preserve_triangles=preserve_triangles,
+            )
+        )
+        is not None
     )
     if not parts:
         raise ValueError("The lasso would remove the entire model")
 
     source = document.source.with_name(f"{document.source.stem}_trimmed{document.source.suffix}")
-    edited = ModelDocument(source=source, parts=parts)
+    edited = ModelDocument(
+        source=source,
+        parts=parts,
+        material_source=document.material_source,
+    )
     after = edited.stats
     return TrimResult(
         document=edited,
@@ -235,7 +282,11 @@ def create_low_res_document(document: ModelDocument, target_cells: int) -> Model
             )
         )
     source = document.source.with_name(f"{document.source.stem}_lores.ply")
-    return ModelDocument(source=source, parts=tuple(parts))
+    return ModelDocument(
+        source=source,
+        parts=tuple(parts),
+        material_source=document.material_source,
+    )
 
 
 def save_document(document: ModelDocument, path: str | Path) -> Path:
@@ -243,8 +294,10 @@ def save_document(document: ModelDocument, path: str | Path) -> Path:
     from pyvista import PolyData
 
     destination = Path(path).expanduser().resolve()
+    if destination.suffix.lower() == ".glb":
+        return save_textured_glb(document, destination)
     if destination.suffix.lower() not in {".ply", ".vtp"}:
-        raise ValueError("Edited models can be saved as PLY or VTP")
+        raise ValueError("Edited models can be saved as GLB, PLY, or VTP")
 
     surfaces: list[PolyData] = []
     for part in document.parts:

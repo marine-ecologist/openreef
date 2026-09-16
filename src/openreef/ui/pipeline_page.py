@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import shutil
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -31,6 +33,7 @@ from PySide6.QtWidgets import (
 from openreef.pipeline.runner import PipelineRunner, format_elapsed
 from openreef.pipeline.stages import (
     DENSE_STAGES,
+    GAUSSIAN_STAGES,
     GENERATE_STAGES,
     STAGE_LABELS,
     STAGE_OUTPUTS,
@@ -82,9 +85,11 @@ class StageCard(QFrame):
         self.style().polish(self)
         if state == "running":
             self.progress.setRange(0, 0)
+            self.progress.setTextVisible(False)
         else:
             self.progress.setRange(0, 1)
             self.progress.setValue(1 if state in ("complete", "ready") else 0)
+            self.progress.setTextVisible(False)
         self.status.setText(detail)
 
 
@@ -105,6 +110,7 @@ class PipelinePage(QWidget):
             "generate": GENERATE_STAGES,
             "dense": DENSE_STAGES,
             "texture": TEXTURE_STAGES,
+            "gaussian": GAUSSIAN_STAGES,
         }[page_kind]
         self.cards: dict[StageKey, StageCard] = {}
         self._artifact_path: Path | None = None
@@ -115,6 +121,8 @@ class PipelinePage(QWidget):
         layout.setSpacing(12)
         layout.addLayout(self._build_header())
         layout.addWidget(self._build_stages())
+        if self.page_kind == "dense":
+            self.cards[StageKey.MESH].checkbox.setChecked(False)
         if self.page_kind in ("dense", "texture"):
             option_row = QHBoxLayout()
             option_row.addWidget(self._build_output_levels())
@@ -129,6 +137,7 @@ class PipelinePage(QWidget):
         self.runner.stage_changed.connect(self._stage_changed)
         self.runner.current_stage_changed.connect(self._current_stage_changed)
         self.runner.progress_changed.connect(self._progress_changed)
+        self.runner.stage_progress.connect(self._stage_progress)
         self.runner.running_changed.connect(self._running_changed)
         self.runner.job_finished.connect(self._job_finished)
         self.runner.artifact_ready.connect(self._artifact_ready)
@@ -151,6 +160,10 @@ class PipelinePage(QWidget):
             "texture": (
                 "Texture Mesh",
                 "Project registered photographs onto each selected surface mesh.",
+            ),
+            "gaussian": (
+                "Gaussian Splat",
+                "Train a fast appearance model from undistorted COLMAP cameras and images.",
             ),
         }
         title, subtitle = titles[self.page_kind]
@@ -282,7 +295,7 @@ class PipelinePage(QWidget):
             form_right.addRow("Fusion agreement", self.fusion_views)
             form_right.addRow(self.estimate_colors)
             form_right.addRow(self.estimate_normals)
-        else:
+        elif self.page_kind == "texture":
             self.texture_resolution_level = QSpinBox()
             self.texture_resolution_level.setRange(0, 4)
             self.texture_resolution_level.setValue(0)
@@ -315,12 +328,122 @@ class PipelinePage(QWidget):
             form_right.addRow("Texture sharpness", self.texture_sharpness)
             form_right.addRow(self.global_seam_leveling)
             form_right.addRow(self.local_seam_leveling)
+        else:
+            self.gaussian_executable = QLineEdit()
+            detected = shutil.which("opensplat")
+            if detected:
+                self.gaussian_executable.setText(detected)
+            self.gaussian_executable.setPlaceholderText(
+                "opensplat or ~/OpenSplat/build/opensplat"
+            )
+            executable_row = QWidget()
+            executable_layout = QHBoxLayout(executable_row)
+            executable_layout.setContentsMargins(0, 0, 0, 0)
+            executable_layout.setSpacing(6)
+            executable_layout.addWidget(self.gaussian_executable, 1)
+            browse = QPushButton("Choose…")
+            browse.clicked.connect(self._choose_gaussian_executable)
+            executable_layout.addWidget(browse)
+
+            self.gaussian_preset = QComboBox()
+            self.gaussian_preset.addItem("Preview — 7k, 4× images", (7_000, 4.0, 2_000_000))
+            self.gaussian_preset.addItem(
+                "Balanced — 15k, 2× images", (15_000, 2.0, 3_500_000)
+            )
+            self.gaussian_preset.addItem("High — 30k, full images", (30_000, 1.0, 5_000_000))
+            self.gaussian_preset.addItem("Custom", None)
+
+            self.gaussian_iterations = QSpinBox()
+            self.gaussian_iterations.setRange(500, 100_000)
+            self.gaussian_iterations.setSingleStep(500)
+            self.gaussian_iterations.setValue(7_000)
+            self.gaussian_iterations.setSuffix(" steps")
+            self.gaussian_downscale = QDoubleSpinBox()
+            self.gaussian_downscale.setRange(1.0, 8.0)
+            self.gaussian_downscale.setDecimals(1)
+            self.gaussian_downscale.setSingleStep(0.5)
+            self.gaussian_downscale.setValue(4.0)
+            self.gaussian_downscale.setSuffix("×")
+            self.gaussian_downscale.setToolTip(
+                "4× loads each image at one quarter of its width and height."
+            )
+            self.gaussian_max_points = QSpinBox()
+            self.gaussian_max_points.setRange(100_000, 20_000_000)
+            self.gaussian_max_points.setSingleStep(100_000)
+            self.gaussian_max_points.setValue(2_000_000)
+            self.gaussian_max_points.setSuffix(" splats")
+            self.gaussian_save_every = QSpinBox()
+            self.gaussian_save_every.setRange(250, 10_000)
+            self.gaussian_save_every.setSingleStep(250)
+            self.gaussian_save_every.setValue(1_000)
+            self.gaussian_save_every.setSuffix(" steps")
+            self.gaussian_resume = QCheckBox("Resume current PLY when possible")
+            self.gaussian_resume.setChecked(True)
+            self.gaussian_center = QCheckBox("Center output (breaks shared coordinates)")
+            self.gaussian_cpu = QCheckBox("Force CPU (about 100× slower)")
+            self.gaussian_low_memory = QCheckBox("Low-memory image cache (slower)")
+            self.gaussian_preset.currentIndexChanged.connect(self._apply_gaussian_preset)
+            self.cores.setEnabled(False)
+            self.cores.setToolTip(
+                "OpenSplat manages its own CPU threads and does not expose a thread limit."
+            )
+
+            form_left = QFormLayout()
+            form_left.addRow("OpenSplat executable", executable_row)
+            form_left.addRow("Quality preset", self.gaussian_preset)
+            form_left.addRow("Training length", self.gaussian_iterations)
+            form_left.addRow("Input image downscale", self.gaussian_downscale)
+            form_left.addRow("Maximum splats", self.gaussian_max_points)
+            form_right = QFormLayout()
+            form_right.addRow("CPU threads (automatic)", self.cores)
+            form_right.addRow("RAM limit", self.memory)
+            form_right.addRow("Checkpoint interval", self.gaussian_save_every)
+            form_right.addRow(self.gaussian_resume)
+            form_right.addRow(self.gaussian_low_memory)
+            form_right.addRow(self.gaussian_cpu)
+            form_right.addRow(self.gaussian_center)
+
+            machine = platform.machine() or "unknown architecture"
+            ram_gb = self._system_memory_gb()
+            ram = f" · {ram_gb:.0f} GB unified memory" if ram_gb else ""
+            hardware = QLabel(
+                f"Detected: {machine}{ram}. Apple Metal is automatic in a Metal-enabled "
+                "OpenSplat build. Preview is the safe first run; CF-3DGS remains a remote "
+                "NVIDIA/CUDA option."
+            )
+            hardware.setObjectName("datasetSummary")
+            hardware.setWordWrap(True)
+            grid.addWidget(hardware, 1, 0, 1, 2)
 
         grid.addLayout(form_left, 0, 0)
         grid.addLayout(form_right, 0, 1)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         return group
+
+    @staticmethod
+    def _system_memory_gb() -> float:
+        try:
+            return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024**3
+        except (OSError, ValueError):
+            return 0.0
+
+    def _choose_gaussian_executable(self) -> None:
+        start = self.gaussian_executable.text() or str(Path.home())
+        selected, _ = QFileDialog.getOpenFileName(
+            self, "Choose the OpenSplat executable", start
+        )
+        if selected:
+            self.gaussian_executable.setText(selected)
+
+    def _apply_gaussian_preset(self, *_: object) -> None:
+        values = self.gaussian_preset.currentData()
+        if values is None:
+            return
+        iterations, downscale, max_points = values
+        self.gaussian_iterations.setValue(iterations)
+        self.gaussian_downscale.setValue(downscale)
+        self.gaussian_max_points.setValue(max_points)
 
     def _build_output_levels(self) -> QGroupBox:
         group = QGroupBox("Output levels")
@@ -378,7 +501,9 @@ class PipelinePage(QWidget):
         row.addWidget(self.elapsed)
 
         self.open_artifact = QPushButton("Open latest model in Viewer")
-        self.open_artifact.setVisible(self.page_kind in ("dense", "texture"))
+        self.open_artifact.setVisible(self.page_kind in ("dense", "texture", "gaussian"))
+        if self.page_kind == "gaussian":
+            self.open_artifact.setText("Preview latest splat as points")
         self.open_artifact.setEnabled(False)
         self.open_artifact.clicked.connect(self._open_artifact)
         row.addWidget(self.open_artifact)
@@ -417,6 +542,19 @@ class PipelinePage(QWidget):
                 single_camera=self.single_camera.isChecked(),
                 max_image_size=self.max_image_size.value(),
                 sequential_overlap=self.overlap.value(),
+            )
+        if self.page_kind == "gaussian":
+            return PipelineOptions(
+                **common,
+                gaussian_executable=self.gaussian_executable.text().strip(),
+                gaussian_iterations=self.gaussian_iterations.value(),
+                gaussian_downscale=self.gaussian_downscale.value(),
+                gaussian_max_points=self.gaussian_max_points.value(),
+                gaussian_save_every=self.gaussian_save_every.value(),
+                gaussian_resume=self.gaussian_resume.isChecked(),
+                gaussian_center=self.gaussian_center.isChecked(),
+                gaussian_cpu=self.gaussian_cpu.isChecked(),
+                gaussian_low_memory=self.gaussian_low_memory.isChecked(),
             )
         levels = {
             "dense_original": self.dense_original.isChecked(),
@@ -478,6 +616,9 @@ class PipelinePage(QWidget):
             )
             if latest:
                 self._artifact_ready(str(latest))
+        elif self.page_kind == "gaussian":
+            if layout.gaussian_output.is_file():
+                self._artifact_ready(str(layout.gaussian_output))
         elif self.page_kind == "dense":
             latest = next(
                 (
@@ -529,6 +670,19 @@ class PipelinePage(QWidget):
     def _progress_changed(self, completed: int, total: int) -> None:
         self.overall_progress.setRange(0, total)
         self.overall_progress.setValue(completed)
+
+    def _stage_progress(self, key: str, completed: int, total: int) -> None:
+        try:
+            card = self.cards.get(StageKey(key))
+        except ValueError:
+            return
+        if card is None:
+            return
+        card.progress.setRange(0, max(1, total))
+        card.progress.setValue(completed)
+        card.progress.setTextVisible(True)
+        card.progress.setFormat(f"{completed * 100 // max(1, total)}%")
+        card.status.setText(f"Training {completed:,} / {total:,}")
 
     def _running_changed(self, running: bool) -> None:
         self.cancel_button.setEnabled(running)

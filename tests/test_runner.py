@@ -53,3 +53,42 @@ def test_runner_streams_output_without_blocking(
     assert "first line" in "".join(output)
     assert "second line" in "".join(output)
     assert app is not None
+
+
+def test_runner_reports_gaussian_iteration_progress(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app = QCoreApplication.instance() or QCoreApplication([])
+    monkeypatch.setattr(
+        runner_module,
+        "build_stage_command",
+        lambda stage, layout, options: StageCommand(
+            "/bin/sh",
+            ("-c", 'printf "Step 700: 0.12 [10%%]\\n"'),
+            tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "stage_output_exists",
+        lambda stage, layout, options=None: True,
+    )
+
+    runner = PipelineRunner()
+    progress: list[tuple[str, int, int]] = []
+    loop = QEventLoop()
+    runner.stage_progress.connect(
+        lambda key, current, total: progress.append((key, current, total))
+    )
+    runner.job_finished.connect(lambda success, message: loop.quit())
+    runner.run(
+        tmp_path,
+        [StageKey.GAUSSIAN],
+        PipelineOptions(cores=2, gaussian_iterations=7_000),
+    )
+    QTimer.singleShot(10_000, loop.quit)
+    loop.exec()
+
+    assert progress == [(StageKey.GAUSSIAN.value, 700, 7_000)]
+    assert app is not None

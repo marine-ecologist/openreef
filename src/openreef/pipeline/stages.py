@@ -22,6 +22,7 @@ class StageKey(str, Enum):
     DENSE = "dense"
     MESH = "mesh"
     TEXTURE = "texture"
+    GAUSSIAN = "gaussian"
 
 
 GENERATE_STAGES = (
@@ -32,7 +33,9 @@ GENERATE_STAGES = (
 )
 DENSE_STAGES = (StageKey.OPENMVS_IMPORT, StageKey.DENSE, StageKey.MESH)
 TEXTURE_STAGES = (StageKey.TEXTURE,)
+GAUSSIAN_STAGES = (StageKey.GAUSSIAN,)
 ALL_STAGES = (*GENERATE_STAGES, *DENSE_STAGES, *TEXTURE_STAGES)
+AVAILABLE_STAGES = (*ALL_STAGES, *GAUSSIAN_STAGES)
 
 STAGE_LABELS = {
     StageKey.FEATURES: "Feature extraction",
@@ -43,6 +46,7 @@ STAGE_LABELS = {
     StageKey.DENSE: "Dense point cloud",
     StageKey.MESH: "Surface mesh",
     StageKey.TEXTURE: "Texture mesh",
+    StageKey.GAUSSIAN: "Train Gaussian splat",
 }
 
 STAGE_OUTPUTS = {
@@ -51,9 +55,10 @@ STAGE_OUTPUTS = {
     StageKey.SPARSE: "colmap/sparse/0",
     StageKey.UNDISTORT: "colmap/dense",
     StageKey.OPENMVS_IMPORT: "openmvs/scene.mvs",
-    StageKey.DENSE: "Selected Original / Medium / Low clouds",
+    StageKey.DENSE: "Selected Original / Medium / Low / Compact clouds",
     StageKey.MESH: "Matching meshes for selected dense-cloud levels",
     StageKey.TEXTURE: "Self-contained textured GLB files",
+    StageKey.GAUSSIAN: "gaussian/<dataset>_gaussian.ply",
 }
 
 IMAGE_EXTENSIONS = {
@@ -77,9 +82,11 @@ class PipelineOptions:
     cores: int
     memory_gb: float = 0.0
     use_gpu: bool = True
+    matching_use_gpu: bool | None = None
     camera_model: str = "SIMPLE_RADIAL"
     single_camera: bool = True
     max_image_size: int = 3200
+    undistort_max_image_size: int | None = None
     sequential_overlap: int = 10
     resolution_level: int = 1
     max_resolution: int = 2560
@@ -90,14 +97,25 @@ class PipelineOptions:
     dense_original: bool = True
     dense_low: bool = False
     dense_medium: bool = False
+    dense_compact: bool = False
     dense_original_percent: int = 100
     dense_medium_percent: int = 20
     dense_low_percent: int = 5
+    dense_compact_percent: int = 1
     texture_resolution_level: int = 0
     max_texture_size: int = 8192
     texture_sharpness: float = 0.5
     global_seam_leveling: bool = True
     local_seam_leveling: bool = True
+    gaussian_executable: str = ""
+    gaussian_iterations: int = 7_000
+    gaussian_downscale: float = 4.0
+    gaussian_max_points: int = 2_000_000
+    gaussian_save_every: int = 1_000
+    gaussian_resume: bool = True
+    gaussian_center: bool = False
+    gaussian_cpu: bool = False
+    gaussian_low_memory: bool = False
 
 
 @dataclass(frozen=True)
@@ -131,12 +149,40 @@ class DatasetLayout:
 
     @property
     def meshes(self) -> Path:
-        """Compatibility alias for the v0.2 root-level models folder."""
+        """Compatibility alias for the root-level models folder."""
         return self.models
 
     @property
     def models(self) -> Path:
         return self.root / "models"
+
+    @property
+    def web_export(self) -> Path:
+        return self.root / "openreef-web"
+
+    @property
+    def tiled_web_export(self) -> Path:
+        return self.root / "openreef-web-tiles"
+
+    @property
+    def tiled_model_manifest(self) -> Path:
+        return self.models / f"{dataset_label(self)}_3d_tiles.json"
+
+    @property
+    def gaussian(self) -> Path:
+        return self.root / "gaussian"
+
+    @property
+    def gaussian_input(self) -> Path:
+        return self.gaussian / "input"
+
+    @property
+    def gaussian_output(self) -> Path:
+        return self.gaussian / f"{dataset_label(self)}_gaussian.ply"
+
+    @property
+    def gaussian_cameras(self) -> Path:
+        return self.gaussian / f"{dataset_label(self)}_cameras.json"
 
     @property
     def legacy_meshes(self) -> Path:
@@ -195,6 +241,10 @@ class DatasetLayout:
         return self.openmvs / "scene_dense_original.ply"
 
     @property
+    def dense_cloud_compact(self) -> Path:
+        return self.openmvs / "scene_dense_compact.ply"
+
+    @property
     def dense_levels_state(self) -> Path:
         return self.openmvs / "scene_dense_levels.json"
 
@@ -224,6 +274,7 @@ class DatasetLayout:
         self.dense.mkdir(parents=True, exist_ok=True)
         self.openmvs.mkdir(parents=True, exist_ok=True)
         self.models.mkdir(parents=True, exist_ok=True)
+        self.gaussian.mkdir(parents=True, exist_ok=True)
 
     def image_count(self) -> int:
         if not self.images.is_dir():
@@ -330,14 +381,19 @@ def main_model_outputs(layout: DatasetLayout) -> dict[str, Path]:
                     "scene_dense_original.ply": layout.dense_cloud,
                     "scene_dense_medium.ply": layout.dense_cloud,
                     "scene_dense_low.ply": layout.dense_cloud,
-                    "scene_mesh.ply": layout.dense_cloud,
-                    "scene_mesh_medium.ply": layout.dense_cloud_medium,
-                    "scene_mesh_low.ply": layout.dense_cloud_low,
+                    "scene_dense_compact.ply": layout.dense_cloud,
+                    "scene_mesh.ply": active_dense_input(layout.dense_cloud),
+                    "scene_mesh_medium.ply": active_dense_input(layout.dense_cloud_medium),
+                    "scene_mesh_low.ply": active_dense_input(layout.dense_cloud_low),
+                    "scene_mesh_compact.ply": active_dense_input(layout.dense_cloud_compact),
                     "scene_mesh_textured.glb": layout.surface_mesh,
                     "scene_mesh_medium_textured.glb": mesh_output_for_level(
                         layout, "medium"
                     ),
                     "scene_mesh_low_textured.glb": mesh_output_for_level(layout, "low"),
+                    "scene_mesh_compact_textured.glb": mesh_output_for_level(
+                        layout, "compact"
+                    ),
                 }.get(path.name)
                 if (
                     freshness_source
@@ -354,6 +410,8 @@ def main_model_outputs(layout: DatasetLayout) -> dict[str, Path]:
                     name = f"{label}_densecloud_low.ply"
                 elif path.name == "scene_dense_medium.ply":
                     name = f"{label}_densecloud_medium.ply"
+                elif path.name == "scene_dense_compact.ply":
+                    name = f"{label}_densecloud_compact.ply"
                 elif path.name == "scene_mesh.ply":
                     outputs[f"{label}_mesh_original.ply"] = path
                     name = f"{label}_mesh.ply"
@@ -364,6 +422,8 @@ def main_model_outputs(layout: DatasetLayout) -> dict[str, Path]:
                     name = f"{label}_textured_mesh_medium.glb"
                 elif path.name == "scene_mesh_low_textured.glb":
                     name = f"{label}_textured_mesh_low.glb"
+                elif path.name == "scene_mesh_compact_textured.glb":
+                    name = f"{label}_textured_mesh_compact.glb"
                 else:
                     name = f"{label}_{path.name.removeprefix('scene_')}"
                 outputs[name] = path
@@ -375,6 +435,20 @@ def main_model_outputs(layout: DatasetLayout) -> dict[str, Path]:
         sparse_cloud = sparse_model / "points3D.ply" if sparse_model else None
         if sparse_cloud and sparse_cloud.is_file():
             outputs[f"{label}_sparsecloud.ply"] = sparse_cloud
+    if layout.gaussian_output.is_file():
+        outputs[f"{label}_gaussian.ply"] = layout.gaussian_output
+        for level in ("medium", "low", "compact"):
+            profile = layout.gaussian_output.with_name(
+                f"{layout.gaussian_output.stem}_{level}.ply"
+            )
+            if profile.is_file():
+                outputs[f"{label}_gaussian_{level}.ply"] = profile
+    sparse_model = layout.sparse_model()
+    if sparse_model is not None:
+        for level in ("medium", "low", "compact"):
+            profile = sparse_model / f"points3D_{level}.ply"
+            if profile.is_file():
+                outputs[f"{label}_sparsecloud_{level}.ply"] = profile
     return outputs
 
 
@@ -392,6 +466,7 @@ def _managed_model_link(path: Path, layout: DatasetLayout) -> bool:
         target.is_relative_to(layout.openmvs)
         or target.is_relative_to(layout.dense)
         or target.is_relative_to(layout.sparse)
+        or target.is_relative_to(layout.gaussian)
     )
 
 
@@ -492,6 +567,12 @@ def selected_dense_levels(
         ),
         ("medium", options.dense_medium, options.dense_medium_percent, layout.dense_cloud_medium),
         ("low", options.dense_low, options.dense_low_percent, layout.dense_cloud_low),
+        (
+            "compact",
+            options.dense_compact,
+            options.dense_compact_percent,
+            layout.dense_cloud_compact,
+        ),
     )
     return tuple(
         (level, percent, output)
@@ -504,6 +585,19 @@ def mesh_output_for_level(layout: DatasetLayout, level: str) -> Path:
     if level == "original":
         return layout.surface_mesh
     return layout.openmvs / f"scene_mesh_{level}.ply"
+
+
+def dense_crop_for_output(output: Path) -> Path:
+    """Return the non-destructive crop used as input to surface reconstruction."""
+    return output.with_name(f"{output.stem}_cropped{output.suffix}")
+
+
+def active_dense_input(output: Path) -> Path:
+    """Prefer a current Viewer crop over its complete dense-cloud source."""
+    cropped = dense_crop_for_output(output)
+    if cropped.is_file() and _newer_than(cropped, output):
+        return cropped
+    return output
 
 
 def textured_output_for_level(layout: DatasetLayout, level: str) -> Path:
@@ -540,6 +634,92 @@ def _dense_level_matches(
     return state.get("source_mtime_ns") == source_mtime and state.get("levels", {}).get(
         level
     ) == percent
+
+
+def _ensure_managed_directory_link(link: Path, target: Path) -> None:
+    """Create or refresh a Gaussian-input link without replacing user data."""
+    if link.is_symlink():
+        try:
+            if link.resolve() == target.resolve():
+                return
+        except OSError:
+            pass
+        link.unlink()
+    elif link.exists():
+        raise StageConfigurationError(
+            f"OpenReef cannot prepare Gaussian input because this path already exists: {link}"
+        )
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(Path(os.path.relpath(target, link.parent)), target_is_directory=True)
+
+
+def prepare_gaussian_input(layout: DatasetLayout) -> Path:
+    """Expose the active cropped or complete COLMAP model to OpenSplat."""
+    images = layout.dense / "images"
+    sparse = layout.dense / "sparse"
+    if layout.roi.is_file():
+        if not _roi_state_matches(layout):
+            raise StageConfigurationError(
+                "The saved crop has not reached OpenMVS import yet. Run OpenMVS import "
+                "before Gaussian training."
+            )
+        text_model = layout.openmvs / "colmap_roi" / "sparse"
+        if not text_model.is_dir():
+            raise StageConfigurationError(
+                "The cropped COLMAP model is missing. Rerun OpenMVS import before "
+                "Gaussian training."
+            )
+        sparse = layout.openmvs / "colmap_roi_binary"
+    _ensure_managed_directory_link(layout.gaussian_input / "images", images)
+    _ensure_managed_directory_link(layout.gaussian_input / "sparse" / "0", sparse)
+    return layout.gaussian_input
+
+
+def gaussian_resume_path(layout: DatasetLayout) -> Path | None:
+    """Return the newest current final/checkpoint PLY produced by OpenSplat."""
+    output = layout.gaussian_output
+    candidates = [output] if output.is_file() else []
+    candidates.extend(
+        path
+        for path in output.parent.glob(f"{output.stem}_*{output.suffix}")
+        if path.is_file()
+    )
+    marker = (
+        layout.undistort_selection_state
+        if layout.undistort_selection_state.is_file()
+        else layout.dense / "sparse" / "images.bin"
+    )
+    if marker.is_file():
+        candidates = [path for path in candidates if _newer_than(path, marker)]
+    return max(candidates, key=lambda path: path.stat().st_mtime_ns, default=None)
+
+
+def resolve_gaussian_executable(value: str = "") -> str:
+    """Resolve a user-selected OpenSplat binary or common local build."""
+    requested = value.strip()
+    if requested:
+        expanded = Path(requested).expanduser()
+        if expanded.is_file():
+            return str(expanded.resolve())
+        found = shutil.which(requested)
+        if found:
+            return found
+        raise StageConfigurationError(f"OpenSplat executable was not found: {requested}")
+
+    found = shutil.which("opensplat")
+    if found:
+        return found
+    for candidate in (
+        Path.home() / "OpenSplat" / "build" / "opensplat",
+        Path.home() / "opensplat" / "build" / "opensplat",
+        Path("/opt/homebrew/bin/opensplat"),
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    raise StageConfigurationError(
+        "OpenSplat is not installed. Build its macOS Metal version, then choose the "
+        "opensplat executable in this tab. See README.md → Gaussian Splat workflow."
+    )
 
 
 def stage_output_exists(
@@ -604,8 +784,9 @@ def stage_output_exists(
         if options:
             for level, _, dense_output in selected_dense_levels(layout, options):
                 mesh_output = mesh_output_for_level(layout, level)
+                dense_input = active_dense_input(dense_output)
                 complete = complete and mesh_output.is_file() and _newer_than(
-                    mesh_output, dense_output
+                    mesh_output, dense_input
                 )
             return complete
         return complete and layout.surface_mesh.is_file() and _newer_than(
@@ -628,6 +809,22 @@ def stage_output_exists(
             return False
         output = textured_output_for_level(layout, "original")
         return output.is_file() and _newer_than(output, layout.surface_mesh)
+    if stage == StageKey.GAUSSIAN:
+        if not layout.gaussian_output.is_file():
+            return False
+        if layout.roi.is_file() and not _roi_state_matches(layout):
+            return False
+        markers = [
+            layout.undistort_selection_state
+            if layout.undistort_selection_state.is_file()
+            else layout.dense / "sparse" / "images.bin"
+        ]
+        if layout.imported_roi_state.is_file():
+            markers.append(layout.imported_roi_state)
+        return all(
+            not marker.is_file() or _newer_than(layout.gaussian_output, marker)
+            for marker in markers
+        )
     return False
 
 
@@ -710,6 +907,26 @@ def validate_stage(
                 raise StageConfigurationError(
                     "The selected surface mesh predates its dense cloud; rerun Surface mesh."
                 )
+    elif stage == StageKey.GAUSSIAN:
+        if not stage_output_exists(StageKey.UNDISTORT, layout):
+            raise StageConfigurationError(
+                "Run Sparse Cloud through Undistort / PINHOLE first; Gaussian training "
+                "needs registered cameras, sparse points, and undistorted images."
+            )
+        if layout.roi.is_file() and not stage_output_exists(
+            StageKey.OPENMVS_IMPORT, layout
+        ):
+            raise StageConfigurationError(
+                "The saved crop must pass through OpenMVS import before Gaussian "
+                "training. Run OpenMVS import again."
+            )
+        if options is None:
+            raise StageConfigurationError("Gaussian processing options are missing.")
+        if options.gaussian_iterations < 1:
+            raise StageConfigurationError("Gaussian iterations must be greater than zero.")
+        if options.gaussian_downscale < 1:
+            raise StageConfigurationError("Gaussian image downscale must be at least 1×.")
+        resolve_gaussian_executable(options.gaussian_executable)
 
 
 def build_stage_command(
@@ -740,6 +957,11 @@ def build_stage_command(
             _flag(options.use_gpu),
         )
     if stage == StageKey.MATCHING:
+        matching_gpu = (
+            options.use_gpu
+            if options.matching_use_gpu is None
+            else options.matching_use_gpu
+        )
         return _colmap(
             layout,
             "sequential_matcher",
@@ -748,11 +970,12 @@ def build_stage_command(
             "--FeatureMatching.num_threads",
             str(options.cores),
             "--FeatureMatching.use_gpu",
-            _flag(options.use_gpu),
+            _flag(matching_gpu),
             "--SequentialMatching.overlap",
             str(options.sequential_overlap),
         )
     if stage == StageKey.SPARSE:
+        levels = selected_dense_levels(layout, options)
         return StageCommand(
             sys.executable,
             (
@@ -769,6 +992,14 @@ def build_stage_command(
                 str(layout.sparse),
                 "--cores",
                 str(options.cores),
+                "--levels",
+                ",".join(level for level, _, _ in levels),
+                "--medium-percent",
+                str(options.dense_medium_percent),
+                "--low-percent",
+                str(options.dense_low_percent),
+                "--compact-percent",
+                str(options.dense_compact_percent),
             ),
             layout.root,
         )
@@ -790,7 +1021,7 @@ def build_stage_command(
                 "--output",
                 str(layout.dense),
                 "--max-image-size",
-                str(options.max_image_size),
+                str(options.undistort_max_image_size or options.max_image_size),
                 "--state",
                 str(layout.undistort_selection_state),
             ),
@@ -858,6 +1089,8 @@ def build_stage_command(
                 str(options.dense_medium_percent),
                 "--low-percent",
                 str(options.dense_low_percent),
+                "--compact-percent",
+                str(options.dense_compact_percent),
             ),
             layout.openmvs,
         )
@@ -880,6 +1113,8 @@ def build_stage_command(
                 str(options.dense_medium_percent),
                 "--low-percent",
                 str(options.dense_low_percent),
+                "--compact-percent",
+                str(options.dense_compact_percent),
                 "--cores",
                 str(options.cores),
             ),
@@ -913,6 +1148,60 @@ def build_stage_command(
             ),
             layout.openmvs,
         )
+    if stage == StageKey.GAUSSIAN:
+        gaussian_input = prepare_gaussian_input(layout)
+        arguments = [
+            "-m",
+            "openreef.pipeline.tasks",
+            "gaussian-opensplat",
+            "--executable",
+            resolve_gaussian_executable(options.gaussian_executable),
+            "--input",
+            str(gaussian_input),
+            "--output",
+            str(layout.gaussian_output),
+            "--output-cameras",
+            str(layout.gaussian_cameras),
+            "--num-iters",
+            str(options.gaussian_iterations),
+            "--downscale-factor",
+            str(options.gaussian_downscale),
+            "--max-gaussians",
+            str(options.gaussian_max_points),
+            "--save-every",
+            str(options.gaussian_save_every),
+            "--levels",
+            ",".join(
+                level for level, _, _ in selected_dense_levels(layout, options)
+            ),
+            "--medium-percent",
+            str(options.dense_medium_percent),
+            "--low-percent",
+            str(options.dense_low_percent),
+            "--compact-percent",
+            str(options.dense_compact_percent),
+        ]
+        if layout.roi.is_file():
+            arguments.extend(
+                (
+                    "--colmap-executable",
+                    resolve_executable("colmap"),
+                    "--colmap-text-input",
+                    str(layout.openmvs / "colmap_roi" / "sparse"),
+                    "--colmap-binary-output",
+                    str(layout.openmvs / "colmap_roi_binary"),
+                )
+            )
+        resume = gaussian_resume_path(layout) if options.gaussian_resume else None
+        if resume is not None:
+            arguments.extend(("--resume", str(resume)))
+        if options.gaussian_center:
+            arguments.append("--center")
+        if options.gaussian_cpu:
+            arguments.append("--cpu")
+        if options.gaussian_low_memory:
+            arguments.append("--no-gpu-cache")
+        return StageCommand(sys.executable, tuple(arguments), layout.gaussian)
     raise StageConfigurationError(f"Unknown stage: {stage}")
 
 

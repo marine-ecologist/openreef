@@ -35,6 +35,7 @@ from openreef.pipeline.stages import (
     sparse_model_counts,
     sync_model_links,
 )
+from openreef.ui.theme import WARNING_ACCENT
 from openreef.ui.viewport import ReefInteractor
 
 
@@ -45,44 +46,56 @@ class PointsViewerPage(QWidget):
         super().__init__(parent)
         self._layout: DatasetLayout | None = None
         self._roi: SparseROI | None = None
+        self._camera_actor = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
 
-        header = QHBoxLayout()
-        title_box = QVBoxLayout()
-        title = QLabel("Points Viewer")
+        header = QVBoxLayout()
+        title = QLabel("Sparse cloud + cameras")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("Inspect COLMAP sparse points and registered camera positions.")
+        subtitle = QLabel(
+            "Inspect COLMAP points and cameras, then crop the volume before Dense Cloud."
+        )
         subtitle.setObjectName("pageSubtitle")
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box, 1)
+        header.addWidget(title)
+        header.addWidget(subtitle)
 
+        toolbar = QHBoxLayout()
         self.model_selector = QComboBox()
         self.model_selector.setMinimumWidth(260)
         self.model_selector.setToolTip(
             "Each entry is a separate connected COLMAP reconstruction folder."
         )
         self.model_selector.currentIndexChanged.connect(self._model_selected)
-        header.addWidget(QLabel("Sparse model"))
-        header.addWidget(self.model_selector)
+        toolbar.addWidget(QLabel("Sparse model"))
+        toolbar.addWidget(self.model_selector, 1)
         self.fit_button = QPushButton("Fit to view")
+        self.fit_button.setShortcut("F")
         self.fit_button.clicked.connect(self._fit)
         self.parallel = QCheckBox("Orthographic")
         self.parallel.toggled.connect(self._set_projection)
-        self.roi_button = QPushButton("Draw processing ROI")
+        self.show_cameras = QCheckBox("Show cameras")
+        self.show_cameras.setChecked(True)
+        self.show_cameras.setEnabled(False)
+        self.show_cameras.setToolTip(
+            "Hide the COLMAP camera markers while reviewing or drawing the crop."
+        )
+        self.show_cameras.toggled.connect(self._set_cameras_visible)
+        self.roi_button = QPushButton("Crop for Dense Cloud")
         self.roi_button.setObjectName("primaryButton")
         self.roi_button.setEnabled(False)
         self.roi_button.clicked.connect(self._begin_roi)
         self.clear_roi_button = QPushButton("Clear ROI")
         self.clear_roi_button.setEnabled(False)
         self.clear_roi_button.clicked.connect(self._clear_roi)
-        header.addWidget(self.fit_button)
-        header.addWidget(self.parallel)
-        header.addWidget(self.roi_button)
-        header.addWidget(self.clear_roi_button)
+        toolbar.addWidget(self.fit_button)
+        toolbar.addWidget(self.parallel)
+        toolbar.addWidget(self.show_cameras)
+        toolbar.addWidget(self.roi_button)
+        toolbar.addWidget(self.clear_roi_button)
+        header.addLayout(toolbar)
         layout.addLayout(header)
 
         views = QHBoxLayout()
@@ -134,6 +147,11 @@ class PointsViewerPage(QWidget):
             return
         self._load_sparse_model(selected)
 
+    def begin_crop(self) -> None:
+        """Open the sparse-cloud crop tool from the combined workflow page."""
+        if self.roi_button.isEnabled():
+            self._begin_roi()
+
     def _model_selected(self, index: int) -> None:
         if self._layout is None or index < 0:
             return
@@ -182,21 +200,24 @@ class PointsViewerPage(QWidget):
             return
 
         self.scene.set_document(document)
+        self._camera_actor = None
         poses = self._load_cameras(model)
         if poses:
             camera_lines = _camera_wireframe(poses, document.stats.bounds)
-            self.plotter.add_mesh(
+            self._camera_actor = self.plotter.add_mesh(
                 camera_lines,
                 name="colmap-cameras",
-                color="#ffad78",
+                color="#8ea8d8",
                 line_width=2,
                 render_lines_as_tubes=True,
             )
+            self._camera_actor.SetVisibility(self.show_cameras.isChecked())
             manifest = self._layout.models / f"{dataset_label(self._layout)}_cameras.json"
             try:
                 save_camera_manifest(poses, manifest)
             except OSError:
                 pass
+        self.show_cameras.setEnabled(bool(poses))
         self._roi = self._load_roi(self._layout.roi, model.name)
         self._show_roi()
         self.roi_button.setEnabled(True)
@@ -210,9 +231,11 @@ class PointsViewerPage(QWidget):
 
     def _show_missing_cloud(self, message: str) -> None:
         self.scene.document = None
+        self._camera_actor = None
         self.plotter.clear()
         self.plotter.add_axes(line_width=2)
         self.roi_button.setEnabled(False)
+        self.show_cameras.setEnabled(False)
         self.summary.setText(message)
 
     def _load_cameras(self, model: Path) -> tuple[CameraPose, ...]:
@@ -276,7 +299,7 @@ class PointsViewerPage(QWidget):
                 pv.Box(bounds=self._roi.bounds),
                 name="processing-roi",
                 style="wireframe",
-                color="#72e3c0",
+                color=WARNING_ACCENT,
                 line_width=3,
             )
         self.plotter.render()
@@ -295,6 +318,12 @@ class PointsViewerPage(QWidget):
 
     def _set_projection(self, enabled: bool) -> None:
         self.scene.set_parallel_projection(enabled)
+
+    def _set_cameras_visible(self, visible: bool) -> None:
+        if self._camera_actor is None:
+            return
+        self._camera_actor.SetVisibility(visible)
+        self.plotter.render()
 
     def _standard_view(self, name: str) -> None:
         self.scene.set_standard_view(name)
