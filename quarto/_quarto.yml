@@ -33,7 +33,7 @@ website:
           - href: colpophyllia.qmd
             text: "Colpophyllia natans"
           - href: patchreef.qmd
-            text: "Patch reef (northern Great Barrier Reef"
+            text: "Patch reef (northern Great Barrier Reef)"
     right:
       - icon: github
         href: https://github.com/marine-ecologist/openreef

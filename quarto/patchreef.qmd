@@ -1,5 +1,5 @@
 ---
-title: "Patch reef (Lizard Island, GBR)"
+title: "Patch reef (northern Great Barrier Reef)"
 title-block-style: none
 page-layout: custom
 ---
