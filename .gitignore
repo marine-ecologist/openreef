@@ -7,12 +7,9 @@ __pycache__/
 venv/
 build/
 dist/
-*.png
-!src/openreef/assets/openreef-icon.png
-*.jpg
-*.jpeg
 .DS_Store
 
 # Always track rendered GitHub Pages site
 !docs/
 !docs/**
+docs/**/.DS_Store
