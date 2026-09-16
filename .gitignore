@@ -12,3 +12,7 @@ dist/
 *.jpg
 *.jpeg
 .DS_Store
+
+# Always track rendered GitHub Pages site
+!docs/
+!docs/**
