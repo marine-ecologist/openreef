@@ -1,6 +1,6 @@
 project:
   type: website
-  output-dir: _site
+  output-dir: ../docs
   render:
     - "*.qmd"
   resources:
@@ -16,6 +16,9 @@ project:
 website:
   title: "OpenReef"
   favicon: favicon.svg
+  site-url: https://marine-ecologist.github.io/openreef/
+  repo-url: https://github.com/marine-ecologist/openreef
+  search: false
 
   navbar:
     logo: openreef-icon.png
@@ -23,16 +26,14 @@ website:
     foreground: light
 
     left:
-      - text: "Code"
-        href: https://github.com/marine-ecologist/openreef/
       - text: "Examples"
         menu:
           - href: orbicella.qmd
-            text: "Orbicella"
+            text: "Orbicella annularis"
           - href: colpophyllia.qmd
-            text: "Colpophyllia"
+            text: "Colpophyllia natans"
           - href: patchreef.qmd
-            text: "Patch reef"
+            text: "Patch reef (northern Great Barrier Reef"
     right:
       - icon: github
         href: https://github.com/marine-ecologist/openreef
@@ -40,7 +41,7 @@ website:
         
 format:
   html:
-    theme: darkly
+    theme: cyborg
     css: styles.css
     toc: false
     include-in-header: _includes/importmap.html

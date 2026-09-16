@@ -5,37 +5,19 @@
 html,
 body {
   min-height: 100%;
-}
+} 
 
-.navbar-brand {
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
+/* ---------------------------------------------------------
+   OpenReef logo
+   --------------------------------------------------------- */
 
 .navbar-logo {
   max-height: 2rem;
-  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 30%));
 }
 
-.openreef-index {
-  padding: clamp(3rem, 8vw, 7rem) 1rem;
-}
-
-.openreef-index > .container-xl > p:first-child {
-  max-width: 52rem;
-  color: var(--bs-secondary-color);
-  font-size: 1.15rem;
-}
-
-.openreef-index .card {
-  background: var(--bs-tertiary-bg);
-  transition: transform 150ms ease, box-shadow 150ms ease;
-}
-
-.openreef-index .card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 0.75rem 1.5rem rgb(0 0 0 / 25%);
-}
+/* ---------------------------------------------------------
+   Full-screen 3D viewer
+   --------------------------------------------------------- */
 
 body:has(.reef-viewer) {
   overflow: hidden;
@@ -43,7 +25,9 @@ body:has(.reef-viewer) {
 
 body:has(.reef-viewer) #quarto-content,
 body:has(.reef-viewer) main.content,
-body:has(.reef-viewer) .page-layout-custom {
+body:has(.reef-viewer) .page-layout-custom,
+body:has(.reef-viewer) .page-columns,
+body:has(.reef-viewer) .content {
   width: 100%;
   max-width: none;
   margin: 0;
@@ -74,12 +58,25 @@ body:has(.reef-viewer) .page-layout-custom {
   cursor: grabbing;
 }
 
+/* ---------------------------------------------------------
+   Viewer vignette
+   --------------------------------------------------------- */
+
 .reef-vignette {
   pointer-events: none;
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 52% 48%, transparent 30%, rgb(0 0 0 / 42%) 100%);
+  background:
+    radial-gradient(
+      circle at 52% 48%,
+      transparent 30%,
+      rgb(0 0 0 / 42%) 100%
+    );
 }
+
+/* ---------------------------------------------------------
+   Overlay elements
+   --------------------------------------------------------- */
 
 .reef-information,
 .reef-status,
@@ -89,6 +86,10 @@ body:has(.reef-viewer) .page-layout-custom {
   position: absolute;
   z-index: 2;
 }
+
+/* ---------------------------------------------------------
+   Model title / description
+   --------------------------------------------------------- */
 
 .reef-information {
   pointer-events: none;
@@ -110,19 +111,29 @@ body:has(.reef-viewer) .page-layout-custom {
   font-size: 0.8rem;
 }
 
+/* ---------------------------------------------------------
+   Loading / model status
+   --------------------------------------------------------- */
+
 .reef-status {
   top: 1.5rem;
   right: 1.5rem;
+
   display: flex;
   align-items: center;
   gap: 0.55rem;
+
   min-height: 2.25rem;
   padding: 0.4rem 0.75rem;
+
   border: 1px solid var(--bs-border-color);
   border-radius: var(--bs-border-radius);
+
   background: rgb(48 48 48 / 94%);
   color: var(--bs-secondary-color);
+
   box-shadow: var(--bs-box-shadow-sm);
+
   font-size: 0.78rem;
 }
 
@@ -135,20 +146,29 @@ body:has(.reef-viewer) .page-layout-custom {
 .reef-spinner {
   width: 0.85rem;
   height: 0.85rem;
+
   border: 2px solid rgb(255 255 255 / 20%);
   border-top-color: var(--bs-success);
   border-radius: 50%;
+
   animation: reef-spin 0.85s linear infinite;
 }
 
 @keyframes reef-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
+
+/* ---------------------------------------------------------
+   Viewer controls
+   --------------------------------------------------------- */
 
 .reef-controls {
   top: 5rem;
   right: 1.5rem;
   width: 13rem;
+
   box-shadow: var(--bs-box-shadow);
 }
 
@@ -156,7 +176,9 @@ body:has(.reef-viewer) .page-layout-custom {
   display: flex;
   align-items: center;
   justify-content: space-between;
+
   color: var(--bs-secondary-color);
+
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -165,6 +187,7 @@ body:has(.reef-viewer) .page-layout-custom {
 
 .reef-controls .form-label {
   color: var(--bs-secondary-color);
+
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -181,12 +204,19 @@ body:has(.reef-viewer) .page-layout-custom {
   display: none !important;
 }
 
+/* ---------------------------------------------------------
+   Help
+   --------------------------------------------------------- */
+
 .reef-help {
   pointer-events: none;
+
   left: 1.5rem;
   bottom: 1rem;
+
   display: flex;
   gap: 1rem;
+
   color: var(--bs-secondary-color);
   font-size: 0.72rem;
 }
@@ -195,10 +225,16 @@ body:has(.reef-viewer) .page-layout-custom {
   color: var(--bs-body-color);
 }
 
+/* ---------------------------------------------------------
+   Progress bar
+   --------------------------------------------------------- */
+
 .reef-progress-wrap {
   left: 50%;
   bottom: 1rem;
+
   width: min(25rem, calc(100vw - 3rem));
+
   transform: translateX(-50%);
 }
 
@@ -207,7 +243,12 @@ body:has(.reef-viewer) .page-layout-custom {
   background: var(--bs-secondary-bg);
 }
 
+/* ---------------------------------------------------------
+   Mobile
+   --------------------------------------------------------- */
+
 @media (max-width: 700px) {
+
   .reef-information {
     top: 1rem;
     left: 1rem;
@@ -249,7 +290,12 @@ body:has(.reef-viewer) .page-layout-custom {
   }
 }
 
+/* ---------------------------------------------------------
+   Accessibility
+   --------------------------------------------------------- */
+
 @media (prefers-reduced-motion: reduce) {
+
   *,
   *::before,
   *::after {
