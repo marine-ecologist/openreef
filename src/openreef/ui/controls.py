@@ -10,19 +10,59 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from openreef.core.scene import DISPLAY_MODES, SPLAT_DISPLAY_MODE
 from openreef.ui.model_catalog import ModelCatalogSection
+
+
+class CollapsibleSection(QFrame):
+    """Compact side-panel section with a disclosure header."""
+
+    def __init__(
+        self, title: str, *, expanded: bool = False, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("collapsibleSection")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.header = QToolButton(self)
+        self.header.setObjectName("collapsibleHeader")
+        self.header.setText(title)
+        self.header.setCheckable(True)
+        self.header.setChecked(expanded)
+        self.header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.header.toggled.connect(self.set_expanded)
+        outer.addWidget(self.header)
+
+        self.content = QWidget(self)
+        self.content.setObjectName("collapsibleContent")
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(10, 8, 10, 10)
+        self.content_layout.setSpacing(7)
+        outer.addWidget(self.content)
+        self.set_expanded(expanded)
+
+    def set_expanded(self, expanded: bool) -> None:
+        self.header.setChecked(expanded)
+        self.header.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.content.setVisible(expanded)
 
 
 class ViewerControls(QWidget):
@@ -34,6 +74,7 @@ class ViewerControls(QWidget):
     compact_web_export_requested = Signal()
     open_web_requested = Signal()
     fit_requested = Signal()
+    set_view_requested = Signal()
     projection_changed = Signal(bool)
     display_mode_changed = Signal(str)
     point_size_changed = Signal(int)
@@ -50,6 +91,7 @@ class ViewerControls(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("viewerControls")
         self.setMinimumWidth(260)
         self.setMaximumWidth(340)
 
@@ -59,7 +101,7 @@ class ViewerControls(QWidget):
 
         heading = QLabel("OPENREEF")
         heading.setObjectName("heading")
-        subtitle = QLabel("Viewer 0.5")
+        subtitle = QLabel("Viewer 0.6.2")
         subtitle.setObjectName("subtitle")
         layout.addWidget(heading)
         layout.addWidget(subtitle)
@@ -73,37 +115,89 @@ class ViewerControls(QWidget):
         file_row = QHBoxLayout()
         self.open_button = QPushButton("Open model…")
         self.open_button.setObjectName("primaryButton")
+        self.open_button.setToolTip("Open a PLY, OBJ, GLB, or Gaussian splat file.")
         self.open_button.clicked.connect(self.open_requested)
         self.save_button = QPushButton("Save as…")
         self.save_button.setEnabled(False)
+        self.save_button.setToolTip("Save the current edited mesh as a new file.")
         self.save_button.clicked.connect(self.save_requested)
         file_row.addWidget(self.open_button, 1)
         file_row.addWidget(self.save_button, 1)
         layout.addLayout(file_row)
 
-        self.view_group = QGroupBox("View")
-        view_layout = QVBoxLayout(self.view_group)
+        self.view_group = CollapsibleSection("View", expanded=True)
+        view_layout = self.view_group.content_layout
+        self._view_camera_controls = QWidget()
+        camera_layout = QVBoxLayout(self._view_camera_controls)
+        camera_layout.setContentsMargins(0, 0, 0, 0)
+        camera_layout.setSpacing(7)
         fit_button = QPushButton("Fit to view")
         fit_button.setShortcut("F")
+        fit_button.setToolTip("Centre the full model in the viewer. Shortcut: F.")
         fit_button.clicked.connect(self.fit_requested)
-        view_layout.addWidget(fit_button)
+        camera_layout.addWidget(fit_button)
+
+        self.set_view_button = QPushButton("Set view")
+        self.set_view_button.setEnabled(False)
+        self.set_view_button.setToolTip(
+            "Save the current camera orientation for future orthographic views."
+        )
+        self.set_view_button.clicked.connect(self.set_view_requested)
+        camera_layout.addWidget(self.set_view_button)
 
         self.projection = QCheckBox("Orthographic projection")
+        self.projection.setToolTip(
+            "Removes perspective foreshortening: parallel lines stay parallel and "
+            "equally sized features remain the same size at every depth."
+        )
         self.projection.toggled.connect(self.projection_changed)
-        view_layout.addWidget(self.projection)
+        camera_layout.addWidget(self.projection)
 
         view_grid = QGridLayout()
         for index, name in enumerate(("Top", "Bottom", "Front", "Back", "Left", "Right")):
             button = QPushButton(name)
+            button.setToolTip(f"Align the camera to the model's {name.lower()} view.")
             button.clicked.connect(
                 lambda checked=False, value=name: self.standard_view_requested.emit(value)
             )
             view_grid.addWidget(button, index // 3, index % 3)
-        view_layout.addLayout(view_grid)
+        camera_layout.addLayout(view_grid)
+        view_layout.addWidget(self._view_camera_controls)
+
+        web_heading = QLabel("OpenReef Web export")
+        web_heading.setObjectName("sectionSubheading")
+        view_layout.addWidget(web_heading)
+        web_buttons = QGridLayout()
+        web_buttons.setSpacing(6)
+        self.web_export_button = QPushButton("Export web…")
+        self.web_export_button.setEnabled(False)
+        self.web_export_button.setToolTip(
+            "Create a browser-ready OpenReef Web folder from the current model."
+        )
+        self.web_export_button.clicked.connect(self.web_export_requested)
+        self.compact_web_export_button = QPushButton("Compact")
+        self.compact_web_export_button.setEnabled(False)
+        self.compact_web_export_button.setToolTip(
+            "Compress GLB textures into a smaller GitHub Pages-ready export without "
+            "changing the original."
+        )
+        self.compact_web_export_button.clicked.connect(self.compact_web_export_requested)
+        self.open_web_button = QPushButton("Open latest")
+        self.open_web_button.setEnabled(False)
+        self.open_web_button.setToolTip("Open the most recently created web export.")
+        self.open_web_button.clicked.connect(self.open_web_requested)
+        web_buttons.addWidget(self.web_export_button, 0, 0, 1, 2)
+        web_buttons.addWidget(self.compact_web_export_button, 1, 0)
+        web_buttons.addWidget(self.open_web_button, 1, 1)
+        view_layout.addLayout(web_buttons)
+        self.web_status = QLabel("Exports the current model as one browser-loaded file.")
+        self.web_status.setObjectName("pageSubtitle")
+        self.web_status.setWordWrap(True)
+        view_layout.addWidget(self.web_status)
         layout.addWidget(self.view_group)
 
-        self.orthomosaic_group = QGroupBox("Orthomosaic image")
-        orthomosaic_layout = QVBoxLayout(self.orthomosaic_group)
+        self.orthomosaic_group = CollapsibleSection("Orthomosaic image")
+        orthomosaic_layout = self.orthomosaic_group.content_layout
         self.orthomosaic_angle_button = QPushButton("1. Set current viewing angle")
         self.orthomosaic_angle_button.setEnabled(False)
         self.orthomosaic_angle_button.setToolTip(
@@ -113,6 +207,9 @@ class ViewerControls(QWidget):
         orthomosaic_layout.addWidget(self.orthomosaic_angle_button)
         orthomosaic_form = QFormLayout()
         self.orthomosaic_resolution = QComboBox()
+        self.orthomosaic_resolution.setToolTip(
+            "Sets the pixel length of the exported image's longest edge."
+        )
         for label, pixels in (("2K", 2048), ("4K", 4096), ("8K", 8192)):
             self.orthomosaic_resolution.addItem(f"{label} ({pixels:,} px)", pixels)
         self.orthomosaic_resolution.setCurrentIndex(1)
@@ -120,9 +217,15 @@ class ViewerControls(QWidget):
         orthomosaic_layout.addLayout(orthomosaic_form)
         self.orthomosaic_transparent = QCheckBox("Transparent background")
         self.orthomosaic_transparent.setChecked(True)
+        self.orthomosaic_transparent.setToolTip(
+            "Save empty pixels with transparency instead of the viewer background."
+        )
         orthomosaic_layout.addWidget(self.orthomosaic_transparent)
         self.orthomosaic_export_button = QPushButton("2. Export orthomosaic PNG…")
         self.orthomosaic_export_button.setEnabled(False)
+        self.orthomosaic_export_button.setToolTip(
+            "Render a high-resolution image from the saved viewing angle."
+        )
         self.orthomosaic_export_button.clicked.connect(self.orthomosaic_export_requested)
         orthomosaic_layout.addWidget(self.orthomosaic_export_button)
         self.orthomosaic_status = QLabel(
@@ -131,9 +234,13 @@ class ViewerControls(QWidget):
         self.orthomosaic_status.setObjectName("pageSubtitle")
         self.orthomosaic_status.setWordWrap(True)
         orthomosaic_layout.addWidget(self.orthomosaic_status)
-        self.display_group = QGroupBox("Display")
-        display_layout = QFormLayout(self.display_group)
+        self.display_group = CollapsibleSection("Display", expanded=True)
+        display_layout = QFormLayout()
+        self.display_group.content_layout.addLayout(display_layout)
         self.display_mode = QComboBox()
+        self.display_mode.setToolTip(
+            "Choose how model geometry is drawn without changing the saved model."
+        )
         self.display_mode.addItems(DISPLAY_MODES)
         self.display_mode.setCurrentText("Wireframe")
         self.display_mode.currentTextChanged.connect(self.display_mode_changed)
@@ -143,6 +250,7 @@ class ViewerControls(QWidget):
         point_size_layout = QGridLayout(point_size_container)
         point_size_layout.setContentsMargins(0, 0, 0, 0)
         self.point_size = QSlider()
+        self.point_size.setToolTip("Adjust the on-screen size of rendered points.")
         self.point_size.setOrientation(Qt.Orientation.Horizontal)
         self.point_size.setRange(1, 20)
         self.point_size.setValue(1)
@@ -156,8 +264,8 @@ class ViewerControls(QWidget):
         display_layout.addRow(self.point_size_label, point_size_container)
         layout.addWidget(self.display_group)
 
-        self.edit_group = QGroupBox("Crop and mesh")
-        edit_layout = QVBoxLayout(self.edit_group)
+        self.edit_group = CollapsibleSection("Crop and mesh")
+        edit_layout = self.edit_group.content_layout
         complexity_row = QGridLayout()
         self.complexity = QSlider(Qt.Orientation.Horizontal)
         self.complexity.setRange(5, 100)
@@ -176,21 +284,28 @@ class ViewerControls(QWidget):
         self.operation = QComboBox()
         self.operation.addItem("Keep inside lasso", "keep")
         self.operation.addItem("Delete inside lasso", "delete")
+        self.operation.setToolTip("Choose which side of the drawn lasso remains in the model.")
         edit_layout.addWidget(self.operation)
         self.draw_button = QPushButton("Draw lasso")
         self.draw_button.setEnabled(False)
+        self.draw_button.setToolTip("Draw a screen-space boundary to crop visible geometry.")
         self.draw_button.clicked.connect(self._request_lasso)
         edit_layout.addWidget(self.draw_button)
         self.use_crop_button = QPushButton("Use crop in next stage")
         self.use_crop_button.setEnabled(False)
+        self.use_crop_button.setToolTip(
+            "Carry the current crop into the next reconstruction stage."
+        )
         self.use_crop_button.clicked.connect(self.use_crop_requested)
         edit_layout.addWidget(self.use_crop_button)
         history_row = QHBoxLayout()
         self.undo_button = QPushButton("Undo")
         self.undo_button.setEnabled(False)
+        self.undo_button.setToolTip("Undo the most recent crop or mesh edit.")
         self.undo_button.clicked.connect(self.undo_requested)
         self.reset_button = QPushButton("Reset")
         self.reset_button.setEnabled(False)
+        self.reset_button.setToolTip("Restore the model to its state when it was opened.")
         self.reset_button.clicked.connect(self.reset_requested)
         history_row.addWidget(self.undo_button)
         history_row.addWidget(self.reset_button)
@@ -202,8 +317,8 @@ class ViewerControls(QWidget):
         layout.addWidget(self.edit_group)
         layout.addWidget(self.orthomosaic_group)
 
-        self.splat_cleanup_group = QGroupBox("Gaussian cleanup")
-        cleanup_layout = QVBoxLayout(self.splat_cleanup_group)
+        self.splat_cleanup_group = CollapsibleSection("Gaussian cleanup")
+        cleanup_layout = self.splat_cleanup_group.content_layout
         cleanup_form = QFormLayout()
         self.splat_minimum_opacity = QDoubleSpinBox()
         self.splat_minimum_opacity.setRange(0.0, 100.0)
@@ -211,6 +326,9 @@ class ViewerControls(QWidget):
         self.splat_minimum_opacity.setSingleStep(1.0)
         self.splat_minimum_opacity.setValue(2.0)
         self.splat_minimum_opacity.setSuffix(" %")
+        self.splat_minimum_opacity.setToolTip(
+            "Remove faint splats below this opacity threshold."
+        )
         cleanup_form.addRow("Minimum opacity", self.splat_minimum_opacity)
         self.splat_maximum_scale = QDoubleSpinBox()
         self.splat_maximum_scale.setRange(90.0, 100.0)
@@ -218,6 +336,9 @@ class ViewerControls(QWidget):
         self.splat_maximum_scale.setSingleStep(0.5)
         self.splat_maximum_scale.setValue(98.5)
         self.splat_maximum_scale.setSuffix(" %ile")
+        self.splat_maximum_scale.setToolTip(
+            "Remove splats larger than this size percentile."
+        )
         cleanup_form.addRow("Maximum size", self.splat_maximum_scale)
         self.splat_maximum_aspect = QDoubleSpinBox()
         self.splat_maximum_aspect.setRange(1.0, 1000.0)
@@ -225,6 +346,9 @@ class ViewerControls(QWidget):
         self.splat_maximum_aspect.setSingleStep(5.0)
         self.splat_maximum_aspect.setValue(50.0)
         self.splat_maximum_aspect.setSuffix("×")
+        self.splat_maximum_aspect.setToolTip(
+            "Remove unusually stretched splats above this aspect ratio."
+        )
         cleanup_form.addRow("Maximum stretch", self.splat_maximum_aspect)
         cleanup_layout.addLayout(cleanup_form)
         self.splat_use_roi = QCheckBox("Keep only the saved crop area")
@@ -250,37 +374,15 @@ class ViewerControls(QWidget):
         self.splat_cleanup_group.setVisible(False)
         layout.addWidget(self.splat_cleanup_group)
 
-        stats_group = QGroupBox("Model statistics")
-        stats_layout = QVBoxLayout(stats_group)
+        self.stats_group = CollapsibleSection("Data")
+        stats_layout = self.stats_group.content_layout
         self.stats = QTextEdit()
         self.stats.setReadOnly(True)
         self.stats.setMinimumHeight(150)
         self.stats.setPlainText("No model loaded")
         stats_layout.addWidget(self.stats)
-        layout.addWidget(stats_group, 1)
-
-        self.web_group = QGroupBox("OpenReef Web")
-        web_layout = QVBoxLayout(self.web_group)
-        self.web_export_button = QPushButton("Export current model…")
-        self.web_export_button.setEnabled(False)
-        self.web_export_button.clicked.connect(self.web_export_requested)
-        self.compact_web_export_button = QPushButton("Export compact")
-        self.compact_web_export_button.setEnabled(False)
-        self.compact_web_export_button.setToolTip(
-            "Compress GLB textures into a GitHub Pages-ready export without changing the original."
-        )
-        self.compact_web_export_button.clicked.connect(self.compact_web_export_requested)
-        self.open_web_button = QPushButton("Open latest openreef-web")
-        self.open_web_button.setEnabled(False)
-        self.open_web_button.clicked.connect(self.open_web_requested)
-        self.web_status = QLabel("Exports the current model as one browser-loaded file.")
-        self.web_status.setObjectName("pageSubtitle")
-        self.web_status.setWordWrap(True)
-        web_layout.addWidget(self.web_export_button)
-        web_layout.addWidget(self.compact_web_export_button)
-        web_layout.addWidget(self.open_web_button)
-        web_layout.addWidget(self.web_status)
-        layout.addWidget(self.web_group)
+        layout.addWidget(self.stats_group)
+        layout.addStretch(1)
 
     def set_stats(self, text: str) -> None:
         self.stats.setPlainText(text)
@@ -298,12 +400,26 @@ class ViewerControls(QWidget):
         self.web_export_button.setEnabled(available and exportable)
         self.compact_web_export_button.setEnabled(available and exportable)
         self.orthomosaic_angle_button.setEnabled(available and exportable)
+        self.set_view_button.setEnabled(available and exportable)
         if not (available and exportable):
             self.reset_orthomosaic_angle()
         if available:
             self.edit_status.setText(description or "Ready to edit.")
         else:
             self.edit_status.setText("Open a model to enable editing.")
+
+    def set_preferred_view_ready(self, ready: bool) -> None:
+        self.set_view_button.setText("Set view again" if ready else "Set view")
+        if ready:
+            self.projection.setToolTip(
+                "Orthographic projection removes perspective foreshortening. The saved "
+                "orientation will be restored whenever it is enabled."
+            )
+        else:
+            self.projection.setToolTip(
+                "Orthographic projection removes perspective foreshortening: parallel lines "
+                "stay parallel and equally sized features remain equally sized at any depth."
+            )
 
     def set_model_catalog(
         self,
@@ -366,7 +482,8 @@ class ViewerControls(QWidget):
                 self.display_mode.addItem(SPLAT_DISPLAY_MODE)
             self.display_mode.setCurrentText(SPLAT_DISPLAY_MODE)
             self.display_mode.setEnabled(False)
-            self.view_group.setVisible(False)
+            self.view_group.setVisible(True)
+            self._view_camera_controls.setVisible(False)
             self.orthomosaic_group.setVisible(False)
             self.display_group.setVisible(False)
             self.edit_group.setVisible(False)
@@ -379,6 +496,7 @@ class ViewerControls(QWidget):
             self.point_size_label.setText("Point size")
             self.point_size_value.setText(f"{self.point_size.value()} px")
             self.view_group.setVisible(True)
+            self._view_camera_controls.setVisible(True)
             self.orthomosaic_group.setVisible(True)
             self.display_group.setVisible(True)
             self.edit_group.setVisible(True)
@@ -394,13 +512,12 @@ class ViewerControls(QWidget):
             self.display_group.setVisible(False)
             self.edit_group.setVisible(False)
             self.splat_cleanup_group.setVisible(False)
-            self.web_group.setVisible(False)
         elif not self._splat_mode:
             self.view_group.setVisible(True)
+            self._view_camera_controls.setVisible(True)
             self.orthomosaic_group.setVisible(True)
             self.display_group.setVisible(True)
             self.edit_group.setVisible(True)
-            self.web_group.setVisible(True)
 
     def set_splat_cleanup_available(self, available: bool, roi_available: bool) -> None:
         self.splat_preview_button.setEnabled(available)

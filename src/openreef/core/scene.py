@@ -65,6 +65,18 @@ class SceneController:
         self.plotter.set_background(color, top=top)
         self.plotter.render()
 
+    def clear_document(self) -> None:
+        """Remove the current project model without leaving stale actors behind."""
+
+        self.plotter.clear()
+        self.plotter.add_axes(line_width=2)
+        self.document = None
+        self._actors.clear()
+        self._glb_actors.clear()
+        self._glb_source = None
+        self._is_splat = False
+        self.plotter.render()
+
     def set_document(self, document: ModelDocument, *, render_splat: bool = True) -> None:
         self.plotter.clear()
         self.plotter.add_axes(line_width=2)
@@ -129,6 +141,12 @@ class SceneController:
     @property
     def is_splat(self) -> bool:
         return self._is_splat
+
+    @property
+    def mesh_actors(self) -> tuple[Any, ...]:
+        """Actors that may be used for surface picking."""
+
+        return tuple(actor for actor, kind in self._actors if kind == "mesh")
 
     def _add_gaussian_splats(self, dataset: Any, name: str) -> None:
         """Render OpenSplat attributes with VTK's embedded GPU Gaussian mapper."""

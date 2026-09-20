@@ -14,6 +14,7 @@ from pathlib import Path
 
 from openreef.core.glb_edit import WEB_COMPACT_TARGET, make_compact_glb
 from openreef.io.colmap_model import SparseROI, filter_text_model_to_roi
+from openreef.io.markertags import run_markertag_workflow
 from openreef.pipeline.stages import active_dense_input, sparse_model_identity, sparse_model_score
 
 
@@ -95,6 +96,45 @@ def sparse_colmap(args: argparse.Namespace) -> int:
         f"{images:,} registered images, {points:,} points",
         flush=True,
     )
+    return 0
+
+
+def markertags(args: argparse.Namespace) -> int:
+    """Detect MarkerTags and create a metric copy of the selected sparse model."""
+    print(
+        f"Scanning registered images for MarkerTags ({args.family}, "
+        f"{args.tag_size_m * 1000:g} mm edge)",
+        flush=True,
+    )
+    payload = run_markertag_workflow(
+        Path(args.images),
+        Path(args.sparse_model),
+        Path(args.metric_model),
+        Path(args.metadata),
+        family=args.family,
+        tag_size_m=args.tag_size_m,
+    )
+    count = int(payload.get("unique_tags", 0))
+    detected_family = str(payload.get("family") or args.family)
+    if detected_family != args.family:
+        print(
+            f"Detected family: {detected_family} "
+            f"(automatic fallback from {args.family})",
+            flush=True,
+        )
+    print(f"MarkerTags detected: {count}", flush=True)
+    if payload.get("scaled"):
+        print(f"Scale: {float(payload['scale_factor']):.8g}", flush=True)
+        print(
+            f"Scale residual: {float(payload['residual_rms_m']) * 1000:.3f} mm "
+            f"from {int(payload.get('inlier_measurements', 0))} tag edges",
+            flush=True,
+        )
+        print("Downstream reconstruction coordinates are metres", flush=True)
+    else:
+        reason = payload.get("reason") or payload.get("status", "unknown reason")
+        print(f"Scale status: unscaled — {reason}", flush=True)
+    print(f"MarkerTag metadata: {args.metadata}", flush=True)
     return 0
 
 
@@ -745,6 +785,13 @@ def main() -> int:
     sparse.add_argument("--medium-percent", type=int, default=20)
     sparse.add_argument("--low-percent", type=int, default=5)
     sparse.add_argument("--compact-percent", type=int, default=1)
+    markers = subparsers.add_parser("markertags")
+    markers.add_argument("--images", required=True)
+    markers.add_argument("--sparse-model", required=True)
+    markers.add_argument("--metric-model", required=True)
+    markers.add_argument("--metadata", required=True)
+    markers.add_argument("--family", default="tag36h11")
+    markers.add_argument("--tag-size-m", type=float, default=0.050)
     undistort = subparsers.add_parser("undistort-colmap")
     undistort.add_argument("--executable", required=True)
     undistort.add_argument("--images", required=True)
@@ -811,6 +858,8 @@ def main() -> int:
         return import_openmvs(args)
     if args.task == "sparse-colmap":
         return sparse_colmap(args)
+    if args.task == "markertags":
+        return markertags(args)
     if args.task == "undistort-colmap":
         return undistort_colmap(args)
     if args.task == "dense-multi":

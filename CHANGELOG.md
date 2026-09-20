@@ -3,6 +3,52 @@
 OpenReef is in active development. This file records both committed releases and
 the development-version increments that existed in the working tree.
 
+## Unreleased
+
+## 0.6.2 — 2026-09-21
+
+- Added metric-gated 3D length and mesh-surface polygon tools with persistent
+  annotations, planar and surface area, perimeter, and relief ratio diagnostics.
+- Corrected Retina-display mesh picking so measurement clicks land on the
+  visible 3D surface rather than an offset location.
+- Added MarkerTag IDs, detection counts, reprojection error, scale source, and
+  robust across-tag scale dispersion to the Process and Viewer Data panels.
+- Reworked Settings into a card grid and the Viewer sidebar into compact,
+  collapsible sections with expanded contextual hover help.
+- Added a six-level workflow palette, prominent MarkerTag detection status, and
+  source-specific image/video preparation controls.
+- Made Viewer state follow project changes by clearing the previous scene and
+  loading the best available result from the newly selected project.
+
+## 0.6.1 — 2026-09-20
+
+- Added metric-gated floating length and mesh-surface polygon measurements to
+  the native 3D viewer, including persistent annotations, planar and clipped
+  surface area, perimeter, relief ratio, and clear-all controls.
+- Added nested MarkerTag and scale metadata for viewer use, robust cross-tag
+  scale dispersion, corner reprojection diagnostics, and a detailed Viewer Data
+  panel. No measurement export is included.
+- Added inverted AprilTag detection and automatic supported-family fallback,
+  including successful metric scaling for legacy `tag16h5` MarkerTags.
+- Streamlined Images, Process, MarkerTags, and Settings pages and clarified
+  processing checkboxes and unscaled MarkerTag results.
+
+## 0.6.0 — 2026-09-20
+
+- Added automatic non-permanent `tag36h11` MarkerTag detection after sparse
+  reconstruction, robust multi-view 3D corner triangulation, and validated metric
+  scaling from the default 50 mm encoded-square edge.
+- Preserved raw COLMAP reconstruction output while routing undistortion, dense,
+  mesh, texture, Gaussian, and 3D Tiles work through a metric sparse-model copy.
+- Added MarkerTag audit metadata, explicit unscaled fallback statuses, desktop and
+  command-line configuration, and Render workflow scale/residual reporting.
+- Reworked the desktop shell around a compact left sidebar for Process, Data,
+  Viewer, Projects, MarkerTags, Settings, and help links, removing the horizontal
+  workspace tabs and leaving the main workspace wide.
+- Introduced a restrained macOS-inspired charcoal appearance with neutral cards,
+  borders, controls, and pipeline states, plus a compact MarkerTags summary beside
+  the Quick preview panel.
+
 ## 0.5.0 — 2026-09-15
 
 - Added local generation of spatial 3D Tiles 1.1 from a textured GLB, using an

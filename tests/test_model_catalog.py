@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from openreef.pipeline.stages import DatasetLayout
-from openreef.ui.model_catalog import discover_model_catalog
+from openreef.ui.model_catalog import discover_model_catalog, preferred_model_path
 
 
 def test_model_catalog_groups_levels_and_custom_saves(tmp_path: Path) -> None:
@@ -41,3 +41,18 @@ def test_model_catalog_adds_sparse_points_and_cameras(tmp_path: Path) -> None:
     assert sections[0].title == "Sparse cloud"
     assert sections[0].items[0].label == "Points + cameras"
     assert sections[0].items[0].path == model
+
+
+def test_project_reload_prefers_high_textured_result(tmp_path: Path) -> None:
+    layout = DatasetLayout(tmp_path)
+    layout.models.mkdir()
+    dense = layout.models / f"{tmp_path.name}_densecloud.ply"
+    textured = layout.models / f"{tmp_path.name}_textured_mesh.glb"
+    compact = layout.models / f"{tmp_path.name}_textured_mesh_compact.glb"
+    dense.touch()
+    textured.touch()
+    compact.touch()
+
+    sections = discover_model_catalog(layout)
+
+    assert preferred_model_path(sections) == textured

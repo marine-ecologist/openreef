@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -38,26 +37,23 @@ from openreef.pipeline.stages import (
     DatasetLayout,
     PipelineOptions,
     StageKey,
+    markertag_status,
     stage_output_exists,
     textured_output_for_level,
 )
-from openreef.ui.theme import (
-    PRIMARY_ACCENT,
-    RUNNING_ACCENT,
-    WARNING_ACCENT,
-    bootstrap_icon,
-)
+from openreef.ui.theme import WORKFLOW_LEVEL_COLORS, bootstrap_icon
 
 WORKFLOW_GROUPS = (
     (
         "Sparse cloud",
         "Find overlaps and solve camera positions",
         "cloud",
-        PRIMARY_ACCENT,
+        WORKFLOW_LEVEL_COLORS[0],
         (
             StageKey.FEATURES,
             StageKey.MATCHING,
             StageKey.SPARSE,
+            StageKey.MARKERTAGS,
             StageKey.UNDISTORT,
         ),
     ),
@@ -65,24 +61,37 @@ WORKFLOW_GROUPS = (
         "Dense cloud",
         "Build detailed points and a surface",
         "cloud-fill",
-        RUNNING_ACCENT,
+        WORKFLOW_LEVEL_COLORS[2],
         (StageKey.OPENMVS_IMPORT, StageKey.DENSE, StageKey.MESH),
     ),
     (
         "Texture mesh",
         "Project photographs onto the surface",
         "border",
-        "#6b95ed",
+        WORKFLOW_LEVEL_COLORS[3],
         (StageKey.TEXTURE,),
     ),
     (
         "Gaussian splat",
         "Train an optional appearance model",
         "flower2",
-        "#7a9ce8",
+        WORKFLOW_LEVEL_COLORS[4],
         (StageKey.GAUSSIAN,),
     ),
 )
+
+STAGE_LEVELS = {
+    StageKey.FEATURES: 1,
+    StageKey.MATCHING: 1,
+    StageKey.SPARSE: 1,
+    StageKey.MARKERTAGS: 1,
+    StageKey.UNDISTORT: 1,
+    StageKey.OPENMVS_IMPORT: 3,
+    StageKey.DENSE: 3,
+    StageKey.MESH: 3,
+    StageKey.TEXTURE: 4,
+    StageKey.GAUSSIAN: 5,
+}
 
 
 class WorkflowStep(QFrame):
@@ -90,10 +99,17 @@ class WorkflowStep(QFrame):
 
     clicked = Signal(str)
 
-    def __init__(self, stage: StageKey, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        stage: StageKey,
+        level: int | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.stage = stage
         self.setObjectName("workflowStep")
+        if level is not None:
+            self.setProperty("level", str(level))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         layout = QGridLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -101,12 +117,15 @@ class WorkflowStep(QFrame):
         layout.setVerticalSpacing(4)
 
         self.checkbox = QCheckBox(STAGE_LABELS[stage])
+        self.checkbox.setObjectName("workflowStageCheckbox")
         self.checkbox.setToolTip(f"Expected output: {STAGE_OUTPUTS[stage]}")
         self.checkbox.clicked.connect(lambda: self.clicked.emit(self.stage.value))
         self.status = QLabel("Pending")
         self.status.setObjectName("statusBadge")
         self.status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.progress = QProgressBar()
+        if level is not None:
+            self.progress.setProperty("level", str(level))
         self.progress.setFixedHeight(4)
         self.progress.setTextVisible(False)
         self.progress.setRange(0, 1)
@@ -114,6 +133,11 @@ class WorkflowStep(QFrame):
         layout.addWidget(self.checkbox, 0, 0)
         layout.addWidget(self.status, 0, 1)
         layout.addWidget(self.progress, 1, 0, 1, 2)
+        self.detail = QLabel()
+        self.detail.setObjectName("datasetSummary")
+        self.detail.setWordWrap(True)
+        self.detail.setVisible(stage == StageKey.MARKERTAGS)
+        layout.addWidget(self.detail, 2, 0, 1, 2)
         layout.setColumnStretch(0, 1)
 
     def mousePressEvent(self, event: object) -> None:  # noqa: N802 - Qt API name
@@ -133,6 +157,7 @@ class WorkflowStep(QFrame):
             "queued": "Queued",
             "running": "Running",
             "failed": "Failed",
+            "attention": "Needs attention",
             "stopped": "Stopped",
         }
         self.status.setText(labels.get(state, state.title()))
@@ -143,6 +168,8 @@ class WorkflowStep(QFrame):
         self.progress.style().unpolish(self.progress)
         self.progress.style().polish(self.progress)
         self.status.setToolTip(detail or "")
+        if self.stage == StageKey.MARKERTAGS:
+            self.detail.setText(detail or "Awaiting MarkerTag scan")
         if state == "running":
             self.progress.setRange(0, 0)
         else:
@@ -162,6 +189,7 @@ class WorkflowGroup(QFrame):
 
     def __init__(
         self,
+        number: int,
         title: str,
         subtitle: str,
         icon_name: str,
@@ -171,17 +199,19 @@ class WorkflowGroup(QFrame):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("workflowGroup")
+        self.setProperty("level", str(number))
         self.stages = stages
-        self.setMinimumWidth(226)
-        self.setStyleSheet(f"QFrame#workflowGroup {{ border-top: 2px solid {accent}; }}")
+        self.setMinimumWidth(232)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 11)
-        layout.setSpacing(8)
+        layout.setContentsMargins(13, 13, 13, 12)
+        layout.setSpacing(9)
 
         heading = QHBoxLayout()
-        icon = QLabel()
-        icon.setPixmap(bootstrap_icon(icon_name, accent, 40).pixmap(22, 22))
-        icon.setStyleSheet("background: transparent; border: 0;")
+        number_label = QLabel(str(number))
+        number_label.setObjectName("stageNumberBadge")
+        number_label.setProperty("level", str(number))
+        number_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        number_label.setFixedSize(28, 28)
         title_box = QVBoxLayout()
         title_label = QLabel(title)
         title_label.setObjectName("workflowGroupTitle")
@@ -191,26 +221,22 @@ class WorkflowGroup(QFrame):
         subtitle_label.setWordWrap(True)
         title_box.addWidget(title_label)
         title_box.addWidget(subtitle_label)
-        heading.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+        heading.addWidget(number_label, 0, Qt.AlignmentFlag.AlignTop)
         heading.addLayout(title_box, 1)
         self.status = QLabel("Pending")
         self.status.setObjectName("statusBadge")
         self.status.setProperty("state", "pending")
         self.status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        heading.addWidget(self.status, 0, Qt.AlignmentFlag.AlignTop)
+        self.status.hide()
         layout.addLayout(heading)
 
         self.steps: dict[StageKey, WorkflowStep] = {}
         for stage in stages:
-            step = WorkflowStep(stage)
+            step = WorkflowStep(stage, number)
             self.steps[stage] = step
             layout.addWidget(step)
         layout.addStretch(1)
 
-        settings = QPushButton("Processing settings")
-        settings.setObjectName("workflowSettingsButton")
-        settings.clicked.connect(self.settings_requested)
-        layout.addWidget(settings)
 
     def set_selected(self, selected: bool) -> None:
         self.setProperty("selected", selected)
@@ -223,6 +249,8 @@ class WorkflowGroup(QFrame):
             state, label = "running", "Running"
         elif "failed" in states:
             state, label = "failed", "Needs attention"
+        elif "attention" in states:
+            state, label = "attention", "Needs attention"
         elif states and all(value == "complete" for value in states):
             state, label = "complete", "Complete"
         elif "queued" in states:
@@ -241,23 +269,29 @@ class CropCheckpoint(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("cropCheckpoint")
-        self.setStyleSheet(
-            f"QFrame#cropCheckpoint {{ border-top: 2px solid {WARNING_ACCENT}; }}"
-        )
-        self.setFixedWidth(142)
+        self.setProperty("level", "2")
+        self.setFixedWidth(176)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(11, 12, 11, 11)
-        layout.setSpacing(8)
-        icon = QLabel()
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setPixmap(bootstrap_icon("crosshair", WARNING_ACCENT, 40).pixmap(24, 24))
-        icon.setStyleSheet("background: transparent; border: 0;")
+        layout.setContentsMargins(13, 13, 13, 12)
+        layout.setSpacing(9)
+        heading = QHBoxLayout()
+        number = QLabel("2")
+        number.setObjectName("stageNumberBadge")
+        number.setProperty("level", "2")
+        number.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        number.setFixedSize(28, 28)
+        heading.addWidget(number)
         title = QLabel("Crop area")
         title.setObjectName("workflowGroupTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(
-            f"color: {WARNING_ACCENT}; font-size: 15px; font-weight: 700;"
+        title.setStyleSheet("font-size: 15px; font-weight: 700;")
+        heading.addWidget(title, 1)
+        layout.addLayout(heading)
+        icon = QLabel()
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setPixmap(
+            bootstrap_icon("crosshair", WORKFLOW_LEVEL_COLORS[1], 56).pixmap(42, 42)
         )
+        icon.setStyleSheet("background: transparent; border: 0;")
         note = QLabel("Optional checkpoint after the sparse cloud")
         note.setObjectName("workflowGroupSubtitle")
         note.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -269,9 +303,9 @@ class CropCheckpoint(QFrame):
         self.button = QPushButton("Review & crop")
         self.button.setEnabled(False)
         self.button.clicked.connect(self.requested)
-        layout.addWidget(icon)
-        layout.addWidget(title)
         layout.addWidget(note)
+        layout.addStretch(1)
+        layout.addWidget(icon)
         layout.addStretch(1)
         layout.addWidget(self.status)
         layout.addWidget(self.button)
@@ -291,21 +325,29 @@ class TilesetCheckpoint(QFrame):
         super().__init__(parent)
         self._building = False
         self.setObjectName("tilesetCheckpoint")
-        self.setStyleSheet(
-            "QFrame#tilesetCheckpoint { border-top: 2px solid #20c997; }"
-        )
-        self.setFixedWidth(142)
+        self.setProperty("level", "6")
+        self.setFixedWidth(176)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(11, 12, 11, 11)
-        layout.setSpacing(8)
-        icon = QLabel()
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setPixmap(bootstrap_icon("box", "#20c997", 40).pixmap(24, 24))
-        icon.setStyleSheet("background: transparent; border: 0;")
+        layout.setContentsMargins(13, 13, 13, 12)
+        layout.setSpacing(9)
+        heading = QHBoxLayout()
+        number = QLabel("6")
+        number.setObjectName("stageNumberBadge")
+        number.setProperty("level", "6")
+        number.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        number.setFixedSize(28, 28)
+        heading.addWidget(number)
         title = QLabel("3D tiles")
         title.setObjectName("workflowGroupTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("color: #20c997; font-size: 15px; font-weight: 700;")
+        title.setStyleSheet("font-size: 15px; font-weight: 700;")
+        heading.addWidget(title, 1)
+        layout.addLayout(heading)
+        icon = QLabel()
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setPixmap(
+            bootstrap_icon("box", WORKFLOW_LEVEL_COLORS[5], 64).pixmap(48, 48)
+        )
+        icon.setStyleSheet("background: transparent; border: 0;")
         note = QLabel("Build streaming tiles from a textured model")
         note.setObjectName("workflowGroupSubtitle")
         note.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -320,9 +362,9 @@ class TilesetCheckpoint(QFrame):
             "Choose the highest-detail textured GLB in this dataset's models folder."
         )
         self.button.clicked.connect(self.requested)
-        layout.addWidget(icon)
-        layout.addWidget(title)
         layout.addWidget(note)
+        layout.addStretch(1)
+        layout.addWidget(icon)
         layout.addStretch(1)
         layout.addWidget(self.status)
         layout.addWidget(self.button)
@@ -365,8 +407,7 @@ class RenderImagesPage(QWidget):
         self.steps: dict[StageKey, WorkflowStep] = {}
         self.groups: list[WorkflowGroup] = []
         self.global_controls: list[QWidget] = []
-        self.settings_pages: dict[StageKey, int] = {}
-        self._selected_stage = StageKey.FEATURES
+        self.settings_pages: dict[StageKey, QWidget] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
@@ -375,6 +416,7 @@ class RenderImagesPage(QWidget):
         layout.addWidget(self._build_workflow())
         layout.addLayout(self._build_run_bar())
         layout.addWidget(self._build_details(), 1)
+        self._install_explanatory_tooltips()
 
         self.runner.output_received.connect(self._append_output)
         self.runner.stage_changed.connect(self._stage_changed)
@@ -389,12 +431,18 @@ class RenderImagesPage(QWidget):
         self.elapsed_timer.setInterval(1000)
         self.elapsed_timer.timeout.connect(self._update_elapsed)
 
-    def _build_header(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(18)
-        title = QLabel("Render images")
+    def _build_header(self) -> QVBoxLayout:
+        header = QVBoxLayout()
+        header.setSpacing(8)
+        title = QLabel("Process")
         title.setObjectName("pageTitle")
-        row.addWidget(title)
+        header.addWidget(title)
+        subtitle = QLabel("Configure and run the reconstruction pipeline.")
+        subtitle.setObjectName("pageSubtitle")
+        header.addWidget(subtitle)
+
+        row = QHBoxLayout()
+        row.setSpacing(12)
         self.dataset_path = QLineEdit()
         self.dataset_path.setPlaceholderText("Dataset folder")
         self.dataset_path.setMinimumWidth(380)
@@ -403,54 +451,53 @@ class RenderImagesPage(QWidget):
         self.browse_button.clicked.connect(self._choose_folder)
         row.addWidget(self.dataset_path, 1)
         row.addWidget(self.browse_button)
+        header.addLayout(row)
 
         # Retain the summary as internal state for cross-page synchronisation,
         # without adding another line of explanatory text to the header.
         self.dataset_summary = QLabel("No dataset selected")
         self.dataset_summary.hide()
-        return row
+        return header
 
     def _build_workflow(self) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setFixedHeight(330)
+        # MarkerTags adds a fifth sparse-cloud step; give the workflow enough
+        # vertical room to keep every step visible without a nested scrollbar.
+        scroll.setFixedHeight(420)
         container = QWidget()
         row = QHBoxLayout(container)
         row.setContentsMargins(0, 2, 0, 2)
         row.setSpacing(10)
 
         for index, (title, subtitle, icon, accent, stages) in enumerate(WORKFLOW_GROUPS):
-            group = WorkflowGroup(title, subtitle, icon, accent, stages)
-            group.settings_requested.connect(
-                lambda checked=False, stage=stages[0]: self._select_settings(stage)
-            )
-            for step in group.steps.values():
-                step.clicked.connect(self._step_clicked)
+            number = 1 if index == 0 else index + 2
+            group = WorkflowGroup(number, title, subtitle, icon, accent, stages)
             self.groups.append(group)
             self.steps.update(group.steps)
             row.addWidget(group, 1)
             if index == 0:
                 arrow = QLabel("→")
                 arrow.setObjectName("workflowArrow")
-                arrow.setStyleSheet(f"color: {PRIMARY_ACCENT}; font-size: 22px;")
+                arrow.setProperty("level", "2")
                 row.addWidget(arrow, 0, Qt.AlignmentFlag.AlignCenter)
                 self.crop_checkpoint = CropCheckpoint()
                 self.crop_checkpoint.requested.connect(self.crop_requested)
                 row.addWidget(self.crop_checkpoint)
                 crop_arrow = QLabel("→")
                 crop_arrow.setObjectName("workflowArrow")
-                crop_arrow.setStyleSheet("color: #718099; font-size: 22px;")
+                crop_arrow.setProperty("level", "3")
                 row.addWidget(crop_arrow, 0, Qt.AlignmentFlag.AlignCenter)
             elif index < len(WORKFLOW_GROUPS) - 1:
                 arrow = QLabel("→")
                 arrow.setObjectName("workflowArrow")
-                arrow.setStyleSheet(f"color: {accent}; font-size: 24px;")
+                arrow.setProperty("level", str(number + 1))
                 row.addWidget(arrow, 0, Qt.AlignmentFlag.AlignCenter)
         tiles_arrow = QLabel("→")
         tiles_arrow.setObjectName("workflowArrow")
-        tiles_arrow.setStyleSheet("color: #20c997; font-size: 22px;")
+        tiles_arrow.setProperty("level", "6")
         row.addWidget(tiles_arrow, 0, Qt.AlignmentFlag.AlignCenter)
         self.tileset_checkpoint = TilesetCheckpoint()
         self.tileset_checkpoint.requested.connect(self.tileset_requested)
@@ -460,33 +507,25 @@ class RenderImagesPage(QWidget):
 
     def _build_global_options(self) -> QGroupBox:
         """Single-column controls shared by every reconstruction stage."""
-        panel = QGroupBox("Global processing & outputs")
+        panel = QGroupBox("Output levels")
         panel.setObjectName("globalOptions")
         panel.setMinimumWidth(240)
         layout = QVBoxLayout(panel)
         layout.setSpacing(9)
 
-        resources = QFormLayout()
-        resources.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-
+        # Resource allocation is automatic in the streamlined Process view.
+        # Keep the values available to the pipeline without presenting tuning
+        # controls that most users should not need to manage.
         available_cores = max(1, os.cpu_count() or 1)
-        self.cores = QSpinBox()
+        self.cores = QSpinBox(self)
         self.cores.setRange(1, available_cores)
         self.cores.setValue(max(1, available_cores - 2))
-        self.cores.setSuffix(" cores")
-        self.memory = QDoubleSpinBox()
+        self.cores.hide()
+        self.memory = QDoubleSpinBox(self)
         self.memory.setRange(0, 256)
         self.memory.setDecimals(0)
         self.memory.setSpecialValueText("Unlimited")
-        self.memory.setSuffix(" GB")
-        self.global_controls.extend((self.cores, self.memory))
-        resources.addRow("CPU", self.cores)
-        resources.addRow("RAM", self.memory)
-        layout.addLayout(resources)
-
-        outputs = QLabel("OUTPUT LEVELS")
-        outputs.setObjectName("fieldLabel")
-        layout.addWidget(outputs)
+        self.memory.hide()
         for key, label, value, checked in (
             ("original", "Original", 100, True),
             ("medium", "Medium", 20, False),
@@ -522,40 +561,57 @@ class RenderImagesPage(QWidget):
         return panel
 
     def _build_settings(self) -> QGroupBox:
-        group = QGroupBox("Feature extraction settings")
-        group.setMinimumWidth(280)
+        group = QGroupBox("Processing settings")
         self.settings_group = group
-        layout = QHBoxLayout(group)
+        layout = QVBoxLayout(group)
 
-        self.settings_stack = QStackedWidget()
         pages = (
             (StageKey.FEATURES, self._feature_settings()),
             (StageKey.MATCHING, self._matching_settings()),
             (StageKey.SPARSE, self._information_settings(
-                "Sparse reconstruction uses the shared CPU and RAM limits above. "
+                "Sparse reconstruction uses automatic resource allocation. "
                 "COLMAP estimates camera positions and creates connected sparse models."
             )),
+            (StageKey.MARKERTAGS, self._markertag_settings()),
             (StageKey.UNDISTORT, self._undistort_settings()),
             (StageKey.OPENMVS_IMPORT, self._information_settings(
                 "OpenMVS imports the selected COLMAP model and any saved crop. "
-                "It uses the shared CPU and RAM limits above."
+                "Processing resources are selected automatically."
             )),
             (StageKey.DENSE, self._dense_settings()),
             (StageKey.MESH, self._information_settings(
                 "Surface reconstruction uses each selected dense-cloud level and "
-                "the shared CPU and RAM limits above."
+                "automatic resource allocation."
             )),
             (StageKey.TEXTURE, self._texture_settings()),
             (StageKey.GAUSSIAN, self._gaussian_settings()),
         )
-        for stage, page in pages:
-            self.settings_pages[stage] = self.settings_stack.addWidget(page)
+
+        settings_grid = QWidget()
+        grid = QGridLayout(settings_grid)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+        column_count = 3
+        for index, (stage, page) in enumerate(pages):
+            card = QGroupBox(STAGE_LABELS[stage])
+            card.setObjectName("settingsCard")
+            card.setProperty("level", str(STAGE_LEVELS[stage]))
+            card.setMinimumWidth(280)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(12, 12, 12, 12)
+            card_layout.addWidget(page)
+            row, column = divmod(index, column_count)
+            grid.addWidget(card, row, column)
+            self.settings_pages[stage] = card
+        for column in range(column_count):
+            grid.setColumnStretch(column, 1)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(self.settings_stack)
+        scroll.setWidget(settings_grid)
         layout.addWidget(scroll, 1)
-        self._select_settings(StageKey.FEATURES)
         return group
 
     def _build_details(self) -> QWidget:
@@ -564,10 +620,33 @@ class RenderImagesPage(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(14)
 
+        # Build the detailed controls once; MainWindow places this group on the
+        # dedicated Settings page instead of embedding it in Process.
+        self._build_settings()
         row.addWidget(self._build_global_options(), 1)
-        row.addWidget(self._build_settings(), 1)
-        row.addWidget(self._build_terminal(), 2)
+        row.addWidget(self._build_marker_options(), 1)
+        row.addWidget(self._build_terminal(), 5)
         return panel
+
+    def _build_marker_options(self) -> QGroupBox:
+        group = QGroupBox("Markers")
+        group.setMinimumWidth(250)
+        layout = QVBoxLayout(group)
+        form = QFormLayout()
+        self.marker_type = QComboBox()
+        self.marker_type.addItem("MarkerTags", "markertags")
+        form.addRow("Marker type", self.marker_type)
+        layout.addLayout(form)
+        self.markertag_preview = QLabel("MarkerTags not scanned")
+        self.markertag_preview.setObjectName("markerTagDetectedStatus")
+        self.markertag_preview.setWordWrap(True)
+        layout.addWidget(self.markertag_preview)
+        self.markertag_scale = QLabel("No metric scale yet")
+        self.markertag_scale.setObjectName("markerTagScaleStatus")
+        self.markertag_scale.setWordWrap(True)
+        layout.addWidget(self.markertag_scale)
+        layout.addStretch(1)
+        return group
 
     def _feature_settings(self) -> QWidget:
         page = QWidget()
@@ -576,7 +655,7 @@ class RenderImagesPage(QWidget):
         self.camera_model.addItems(
             ("SIMPLE_RADIAL", "PINHOLE", "OPENCV", "SIMPLE_RADIAL_FISHEYE")
         )
-        self.single_camera = QCheckBox("Treat all images as one unchanged camera")
+        self.single_camera = QCheckBox("Use one camera for all images")
         self.single_camera.setChecked(True)
         self.feature_use_gpu = QCheckBox("Use GPU for feature finding")
         self.feature_use_gpu.setChecked(True)
@@ -617,6 +696,30 @@ class RenderImagesPage(QWidget):
         note.setWordWrap(True)
         form.addRow(note)
         form.addRow("Maximum output size", self.undistort_max_image_size)
+        return page
+
+    def _markertag_settings(self) -> QWidget:
+        page = QWidget()
+        form = QFormLayout(page)
+        self.marker_tag_family = QComboBox()
+        self.marker_tag_family.addItems(
+            ("tag36h11", "tag36h10", "tag25h9", "tag16h5")
+        )
+        self.marker_tag_size_mm = QDoubleSpinBox()
+        self.marker_tag_size_mm.setRange(1.0, 1000.0)
+        self.marker_tag_size_mm.setDecimals(1)
+        self.marker_tag_size_mm.setValue(50.0)
+        self.marker_tag_size_mm.setSuffix(" mm")
+        note = QLabel(
+            "Non-permanent MarkerTags are triangulated across registered images. "
+            "Scale uses only the encoded square edge; the 90 mm disc, 8 mm thickness, "
+            "and 0.6 mm raised face are excluded."
+        )
+        note.setObjectName("datasetSummary")
+        note.setWordWrap(True)
+        form.addRow(note)
+        form.addRow("AprilTag family", self.marker_tag_family)
+        form.addRow("Tag edge", self.marker_tag_size_mm)
         return page
 
     def _information_settings(self, message: str) -> QWidget:
@@ -747,7 +850,7 @@ class RenderImagesPage(QWidget):
 
     def _build_run_bar(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        self.run_button = QPushButton("Run checked steps")
+        self.run_button = QPushButton("Run pipeline")
         self.run_button.setObjectName("primaryButton")
         self.run_button.clicked.connect(self._start_run)
         self.incomplete_button = QPushButton("Select incomplete")
@@ -766,6 +869,7 @@ class RenderImagesPage(QWidget):
         self.current_stage.setObjectName("currentStage")
         row.addWidget(self.current_stage)
         self.overall_progress = QProgressBar()
+        self.overall_progress.setObjectName("workflowOverallProgress")
         self.overall_progress.setFormat("%v of %m checked steps")
         row.addWidget(self.overall_progress, 1)
         self.elapsed = QLabel("00:00")
@@ -773,7 +877,7 @@ class RenderImagesPage(QWidget):
         return row
 
     def _build_terminal(self) -> QGroupBox:
-        group = QGroupBox("Live processing")
+        group = QGroupBox("Live log")
         group.setMinimumWidth(480)
         layout = QVBoxLayout(group)
         toolbar = QHBoxLayout()
@@ -790,22 +894,81 @@ class RenderImagesPage(QWidget):
         layout.addWidget(self.terminal)
         return group
 
-    def _step_clicked(self, key: str) -> None:
-        try:
-            self._select_settings(StageKey(key))
-        except ValueError:
-            return
+    def _install_explanatory_tooltips(self) -> None:
+        """Keep dense workflow guidance available on hover instead of in the layout."""
+        tooltips = {
+            self.marker_type: "MarkerTags currently use AprilTag tag36h11 with a 50 mm tag edge.",
+            self.camera_model: "Camera lens model used when COLMAP extracts image features.",
+            self.single_camera: "Share one calibration across images captured by the same camera.",
+            self.max_image_size: "Maximum image dimension used for feature detection.",
+            self.feature_use_gpu: "Use the GPU to accelerate feature extraction when supported.",
+            self.overlap: "Number of nearby frames compared during sequential matching.",
+            self.matching_use_gpu: "Use the GPU to accelerate feature matching when supported.",
+            self.marker_tag_family: "AprilTag family decoded during the MarkerTag scan.",
+            self.marker_tag_size_mm: "Physical edge length of the black-and-white encoded square.",
+            self.undistort_max_image_size: "Maximum dimension of images prepared for OpenMVS.",
+            self.resolution_level: "0 uses full resolution; each higher level halves it.",
+            self.max_resolution: "Maximum image dimension used to reconstruct the dense cloud.",
+            self.number_views: "Neighbouring camera views considered for each depth estimate.",
+            self.fusion_views: "Views that must agree before a dense point is retained.",
+            self.estimate_colors: "Transfer image colour estimates onto dense points.",
+            self.estimate_normals: "Estimate local surface directions for dense points.",
+            self.texture_resolution_level: "Image downsampling used while building textures.",
+            self.max_texture_size: "Maximum width or height of the generated texture atlas.",
+            self.texture_sharpness: "Texture sharpening strength; 0 disables sharpening.",
+            self.global_seam_leveling: "Balance brightness and colour between texture patches.",
+            self.local_seam_leveling: "Blend local boundaries between neighbouring patches.",
+            self.gaussian_executable: "Path to the OpenSplat executable used for training.",
+            self.gaussian_preset: "Apply a coordinated set of Gaussian training settings.",
+            self.gaussian_iterations: "Number of optimisation steps used to train the splat.",
+            self.gaussian_downscale: "Reduce training image size to lower memory use.",
+            self.gaussian_max_points: "Maximum number of Gaussian splats retained.",
+            self.gaussian_save_every: "Training interval between saved checkpoints.",
+            self.gaussian_resume: "Continue from the newest compatible checkpoint if present.",
+            self.gaussian_low_memory: "Reduce peak memory use at the cost of speed.",
+            self.gaussian_cpu: "Run Gaussian training on the CPU when GPU use is unavailable.",
+            self.gaussian_center: "Centre the splat output, changing shared model coordinates.",
+            self.run_button: "Run every pipeline step currently selected above.",
+            self.incomplete_button: "Select only steps whose expected outputs are missing.",
+            self.cancel_button: "Stop after safely terminating the active processing command.",
+            self.latest_button: "Open the newest model produced by this dataset.",
+        }
+        for widget, explanation in tooltips.items():
+            widget.setToolTip(explanation)
 
-    def _select_settings(self, stage: StageKey) -> None:
-        if stage not in self.settings_pages:
-            return
-        self._selected_stage = stage
-        self.settings_stack.setCurrentIndex(self.settings_pages[stage])
-        self.settings_group.setTitle(f"{STAGE_LABELS[stage]} settings")
-        for group in self.groups:
-            group.set_selected(stage in group.stages)
-            for step_stage, step in group.steps.items():
-                step.set_selected(step_stage == stage)
+        for checkbox, explanation in (
+            (self.dense_original, "Build the full-resolution dense, mesh, and texture outputs."),
+            (self.dense_medium, "Also build a lighter output using the selected percentage."),
+            (self.dense_low, "Also build a small preview output using the selected percentage."),
+        ):
+            checkbox.setToolTip(explanation)
+
+    def _update_markertag_panel(self, detail: str) -> None:
+        """Show a prominent detection result and separate scale diagnostics."""
+        parts = [part.strip() for part in detail.split("·") if part.strip()]
+        first = parts[0] if parts else "Not scanned"
+        count = 0
+        if first.startswith("MarkerTags detected:"):
+            try:
+                count = int(first.rsplit(":", 1)[1].strip())
+            except ValueError:
+                count = 0
+
+        detected = count > 0
+        if detected:
+            headline = f"✓ MarkerTags detected · {count}"
+        elif first == "Not scanned":
+            headline = "MarkerTags not scanned"
+        else:
+            headline = "MarkerTags not detected"
+
+        self.markertag_preview.setText(headline)
+        self.markertag_preview.setProperty("detected", detected)
+        self.markertag_preview.style().unpolish(self.markertag_preview)
+        self.markertag_preview.style().polish(self.markertag_preview)
+        self.markertag_scale.setText(
+            " · ".join(parts[1:]) if len(parts) > 1 else "No metric scale yet"
+        )
 
     def selected_options(self) -> PipelineOptions:
         return PipelineOptions(
@@ -818,6 +981,8 @@ class RenderImagesPage(QWidget):
             max_image_size=self.max_image_size.value(),
             undistort_max_image_size=self.undistort_max_image_size.value(),
             sequential_overlap=self.overlap.value(),
+            marker_tag_family=self.marker_tag_family.currentText(),
+            marker_tag_size_m=self.marker_tag_size_mm.value() / 1000.0,
             resolution_level=self.resolution_level.value(),
             max_resolution=self.max_resolution.value(),
             number_views=self.number_views.value(),
@@ -855,6 +1020,7 @@ class RenderImagesPage(QWidget):
         self.dataset_path.blockSignals(False)
         if not value:
             self.dataset_summary.setText("No dataset selected")
+            self._update_markertag_panel("Not scanned")
             self.tileset_checkpoint.set_available(False, False)
             return
         layout = DatasetLayout.from_path(value)
@@ -862,7 +1028,13 @@ class RenderImagesPage(QWidget):
         options = self.selected_options()
         for stage, step in self.steps.items():
             complete = stage_output_exists(stage, layout, options)
-            step.set_state("complete" if complete else "pending")
+            detail = markertag_status(layout) if stage == StageKey.MARKERTAGS else None
+            state = "complete" if complete else "pending"
+            if stage == StageKey.MARKERTAGS and detail and "Unscaled" in detail:
+                state = "attention"
+            step.set_state(state, detail)
+            if stage == StageKey.MARKERTAGS:
+                self._update_markertag_panel(detail or "Not scanned")
             if not self.runner.is_running:
                 step.checkbox.setChecked(not complete)
         for group in self.groups:
@@ -939,6 +1111,14 @@ class RenderImagesPage(QWidget):
         except ValueError:
             return
         if step is not None:
+            if step.stage == StageKey.MARKERTAGS and state == "complete":
+                value = self.dataset_path.text().strip()
+                if value:
+                    detail = markertag_status(DatasetLayout.from_path(value))
+                    if "Unscaled" in detail:
+                        state = "attention"
+            if step.stage == StageKey.MARKERTAGS:
+                self._update_markertag_panel(detail or state.title())
             step.set_state(state, detail)
             for group in self.groups:
                 if step.stage in group.stages:

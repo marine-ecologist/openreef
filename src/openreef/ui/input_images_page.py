@@ -100,6 +100,9 @@ class InputImagesPage(QWidget):
         self.source_kind.addItem("Existing dataset images", "existing")
         self.source_kind.addItem("Photo folder", "photos")
         self.source_kind.addItem("Video file", "video")
+        self.source_kind.setToolTip(
+            "Choose whether to use prepared dataset images, copy photos, or sample a video."
+        )
         self.source_kind.currentIndexChanged.connect(self._source_kind_changed)
         source_form.addRow("Input type", self.source_kind)
         self.source_path = QLineEdit()
@@ -119,9 +122,9 @@ class InputImagesPage(QWidget):
         self.video_interval.setDecimals(1)
         self.video_interval.setValue(1.0)
         self.video_interval.setSuffix(" seconds")
-        self.video_interval.setEnabled(False)
         self.video_interval.setToolTip("Time between extracted video frames.")
-        options_form.addRow("Sample every", self.video_interval)
+        self.video_interval_label = QLabel("Sample every")
+        options_form.addRow(self.video_interval_label, self.video_interval)
         self.color_correct = QCheckBox("Apply conservative underwater color correction")
         self.color_correct.setChecked(False)
         self.color_correct.setToolTip(
@@ -132,11 +135,19 @@ class InputImagesPage(QWidget):
         self.jpeg_quality.setRange(80, 100)
         self.jpeg_quality.setValue(98)
         self.jpeg_quality.setSuffix("%")
-        options_form.addRow("JPEG quality", self.jpeg_quality)
+        self.jpeg_quality.setToolTip(
+            "JPEG compression quality for prepared photos; higher values preserve more detail."
+        )
+        self.jpeg_quality_label = QLabel("JPEG quality")
+        options_form.addRow(self.jpeg_quality_label, self.jpeg_quality)
         layout.addWidget(options_group)
+        self._update_preparation_visibility()
 
         self.prepare_button = QPushButton("Prepare Input Images")
         self.prepare_button.setObjectName("primaryButton")
+        self.prepare_button.setToolTip(
+            "Create the dataset image set using the selected source and preparation options."
+        )
         self.prepare_button.clicked.connect(self._prepare)
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
@@ -189,8 +200,10 @@ class InputImagesPage(QWidget):
         video_layout.addWidget(self.video_widget, 1)
         video_controls = QHBoxLayout()
         self.play_button = QPushButton("Play")
+        self.play_button.setToolTip("Play or pause the selected source video.")
         self.play_button.clicked.connect(self._toggle_video)
         self.video_position = QSlider(Qt.Orientation.Horizontal)
+        self.video_position.setToolTip("Seek through the selected source video.")
         self.video_position.setRange(0, 0)
         self.video_position.sliderMoved.connect(self.player_set_position)
         self.video_time = QLabel("00:00 / 00:00")
@@ -265,7 +278,7 @@ class InputImagesPage(QWidget):
 
     def _source_kind_changed(self) -> None:
         kind = self.source_kind.currentData()
-        self.video_interval.setEnabled(kind == "video")
+        self._update_preparation_visibility()
         labels = {
             "existing": "Use dataset images",
             "photos": "Choose photo folder…",
@@ -280,6 +293,15 @@ class InputImagesPage(QWidget):
         else:
             self._source = None
             self.source_path.clear()
+
+    def _update_preparation_visibility(self) -> None:
+        """Show only preparation controls that apply to the chosen source."""
+        is_video = self.source_kind.currentData() == "video"
+        self.video_interval_label.setVisible(is_video)
+        self.video_interval.setVisible(is_video)
+        self.color_correct.setVisible(not is_video)
+        self.jpeg_quality_label.setVisible(not is_video)
+        self.jpeg_quality.setVisible(not is_video)
 
     def _choose_source(self) -> None:
         kind = self.source_kind.currentData()

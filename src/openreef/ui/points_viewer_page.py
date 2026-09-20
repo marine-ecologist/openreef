@@ -73,8 +73,12 @@ class PointsViewerPage(QWidget):
         toolbar.addWidget(self.model_selector, 1)
         self.fit_button = QPushButton("Fit to view")
         self.fit_button.setShortcut("F")
+        self.fit_button.setToolTip("Centre the full sparse reconstruction. Shortcut: F.")
         self.fit_button.clicked.connect(self._fit)
         self.parallel = QCheckBox("Orthographic")
+        self.parallel.setToolTip(
+            "Remove perspective foreshortening so parallel lines remain parallel."
+        )
         self.parallel.toggled.connect(self._set_projection)
         self.show_cameras = QCheckBox("Show cameras")
         self.show_cameras.setChecked(True)
@@ -86,9 +90,13 @@ class PointsViewerPage(QWidget):
         self.roi_button = QPushButton("Crop for Dense Cloud")
         self.roi_button.setObjectName("primaryButton")
         self.roi_button.setEnabled(False)
+        self.roi_button.setToolTip(
+            "Draw a region of interest and use it to limit later dense reconstruction."
+        )
         self.roi_button.clicked.connect(self._begin_roi)
         self.clear_roi_button = QPushButton("Clear ROI")
         self.clear_roi_button.setEnabled(False)
+        self.clear_roi_button.setToolTip("Remove the saved sparse reconstruction crop.")
         self.clear_roi_button.clicked.connect(self._clear_roi)
         toolbar.addWidget(self.fit_button)
         toolbar.addWidget(self.parallel)
@@ -101,6 +109,7 @@ class PointsViewerPage(QWidget):
         views = QHBoxLayout()
         for name in ("Top", "Front", "Right"):
             button = QPushButton(name)
+            button.setToolTip(f"Align the camera to the {name.lower()} view.")
             button.clicked.connect(lambda checked=False, value=name: self._standard_view(value))
             views.addWidget(button)
         self.summary = QLabel("Run Sparse reconstruction to inspect points and cameras.")
@@ -145,7 +154,7 @@ class PointsViewerPage(QWidget):
         if selected is None:
             self._show_missing_cloud("Sparse cloud not available yet.")
             return
-        self._load_sparse_model(selected)
+        self._load_sparse_model(self._layout.processing_sparse_model() or selected)
 
     def begin_crop(self) -> None:
         """Open the sparse-cloud crop tool from the combined workflow page."""
@@ -161,7 +170,7 @@ class PointsViewerPage(QWidget):
         except (OSError, ValueError) as exc:
             self.summary.setText(f"Could not select sparse model: {exc}")
             return
-        self._load_sparse_model(model)
+        self._load_sparse_model(self._layout.processing_sparse_model() or model)
 
     def _load_sparse_model(self, model: Path) -> None:
         assert self._layout is not None
@@ -214,17 +223,25 @@ class PointsViewerPage(QWidget):
             self._camera_actor.SetVisibility(self.show_cameras.isChecked())
             manifest = self._layout.models / f"{dataset_label(self._layout)}_cameras.json"
             try:
-                save_camera_manifest(poses, manifest)
+                coordinate_system = (
+                    "metric COLMAP world coordinates (metres)"
+                    if model == self._layout.metric_sparse
+                    else "COLMAP world coordinates"
+                )
+                save_camera_manifest(poses, manifest, coordinate_system)
             except OSError:
                 pass
         self.show_cameras.setEnabled(bool(poses))
-        self._roi = self._load_roi(self._layout.roi, model.name)
+        selected_source = self._layout.sparse_model()
+        selected_name = selected_source.name if selected_source is not None else model.name
+        self._roi = self._load_roi(self._layout.roi, selected_name)
         self._show_roi()
         self.roi_button.setEnabled(True)
         self.clear_roi_button.setEnabled(self._roi is not None)
         self.summary.setText(
-            f"Model {model.name} · {document.stats.points:,} sparse points · "
+            f"Model {selected_name} · {document.stats.points:,} sparse points · "
             f"{len(poses):,} of {self._layout.image_count():,} images registered"
+            + (" · metric MarkerTag scale" if model == self._layout.metric_sparse else "")
             + (" · processing ROI active" if self._roi else "")
         )
         self.scene.fit_to_view()

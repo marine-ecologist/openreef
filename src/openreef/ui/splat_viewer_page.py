@@ -155,9 +155,13 @@ class SplatViewerPage(QWidget):
         toolbar_layout.addWidget(self.status_label)
         toolbar_layout.addStretch(1)
         self.reload_button = QPushButton("Reload")
+        self.reload_button.setToolTip("Reload the current Gaussian splat in the viewer.")
         self.reload_button.clicked.connect(self.reload)
         toolbar_layout.addWidget(self.reload_button)
         self.browser_button = QPushButton("Open in browser")
+        self.browser_button.setToolTip(
+            "Open the local Gaussian viewer in your default browser for WebGPU support."
+        )
         self.browser_button.clicked.connect(self.open_in_browser)
         toolbar_layout.addWidget(self.browser_button)
         layout.addWidget(toolbar)

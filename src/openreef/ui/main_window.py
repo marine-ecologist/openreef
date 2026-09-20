@@ -6,11 +6,12 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, Qt, QUrl
+from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -18,12 +19,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QStackedWidget,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from openreef.core.camera import CameraView, orthomosaic_image_size
+from openreef.core.camera import CameraOrientation, CameraView, orthomosaic_image_size
 from openreef.core.mesh_edit import (
     LassoOperation,
     apply_lasso_operation,
@@ -34,18 +34,30 @@ from openreef.core.model import ModelDocument
 from openreef.core.scene import SceneController, is_gaussian_splat
 from openreef.io.colmap_model import SparseROI
 from openreef.io.gaussian_ply import clean_gaussian_document, write_gaussian_ply
+from openreef.io.markertags import (
+    format_viewer_diagnostics,
+    has_metric_scale,
+    read_viewer_metadata,
+)
 from openreef.io.model_loader import ModelLoadError, load_model
 from openreef.pipeline.input_runner import InputRunner
 from openreef.pipeline.runner import PipelineRunner
 from openreef.pipeline.stages import (
     DatasetLayout,
+    StageKey,
     dataset_label,
     dense_crop_for_output,
+    stage_output_exists,
     sync_model_links,
 )
 from openreef.ui.controls import ViewerControls
 from openreef.ui.input_images_page import InputImagesPage
-from openreef.ui.model_catalog import discover_model_catalog
+from openreef.ui.measurements import MeasurementController
+from openreef.ui.model_catalog import (
+    ModelCatalogSection,
+    discover_model_catalog,
+    preferred_model_path,
+)
 from openreef.ui.points_viewer_page import PointsViewerPage
 from openreef.ui.render_images_page import RenderImagesPage
 from openreef.ui.splat_viewer_page import SplatViewerPage
@@ -76,22 +88,18 @@ class MainWindow(QMainWindow):
         restore_last_dataset: bool = True,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("OpenReef 0.5")
-        self.resize(1440, 920)
+        self.setWindowTitle("OpenReef 0.6.2")
+        # The wider default leaves the embedded streaming 3D Tiles canvas useful
+        # alongside the viewer controls without changing the compact dark layout.
+        self.resize(1848, 1104)
 
         self.runner = PipelineRunner(self)
         self.input_runner = InputRunner(self)
-        self.tabs = QTabWidget()
-        self.tabs.setObjectName("workspaceTabs")
-        self.tabs.setDocumentMode(True)
-
-        shell = QWidget()
-        shell_layout = QVBoxLayout(shell)
-        shell_layout.setContentsMargins(0, 0, 0, 0)
-        shell_layout.setSpacing(0)
-        shell_layout.addWidget(self._build_app_header())
-        shell_layout.addWidget(self.tabs, 1)
-        self.setCentralWidget(shell)
+        # Keep the historical name internally because viewer and pipeline actions
+        # already switch this workspace. The visible tab bar is replaced by the
+        # macOS-style sidebar below.
+        self.tabs = QStackedWidget()
+        self.tabs.setObjectName("workspaceStack")
 
         self.input_page = InputImagesPage(self.input_runner)
         self.render_page = RenderImagesPage(self.runner)
@@ -114,6 +122,7 @@ class MainWindow(QMainWindow):
         self._tile_process.finished.connect(self._tile_build_finished)
         self._tile_process.errorOccurred.connect(self._tile_build_error)
         self._orthomosaic_view: CameraView | None = None
+        self._orthographic_orientation = self._load_orthographic_orientation()
         self._splat_preview_folder = TemporaryDirectory(prefix="openreef-splat-")
 
         self.viewer_page = QWidget()
@@ -142,16 +151,35 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.viewer_stack, 1)
         layout.addWidget(self.controls_scroll)
 
-        self.tabs.addTab(self.input_scroll, "Input images")
-        self.tabs.addTab(self.render_scroll, "Render images")
-        self.tabs.addTab(self.viewer_page, "3D viewer")
+        self.projects_page = self._build_projects_page()
+        self.markertags_page = self._build_markertags_page()
+        self.settings_page = self._build_settings_page()
+        for page in (
+            self.render_scroll,
+            self.input_scroll,
+            self.viewer_page,
+            self.projects_page,
+            self.markertags_page,
+            self.settings_page,
+        ):
+            self.tabs.addWidget(page)
+
+        shell = QWidget()
+        shell_layout = QHBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+        shell_layout.addWidget(self._build_sidebar())
+        shell_layout.addWidget(self.tabs, 1)
+        self.setCentralWidget(shell)
 
         self.scene = SceneController(self.plotter)
+        self.measurements = MeasurementController(self.plotter)
         self._dark_mode = QSettings().value("appearance/dark", True, type=bool)
         self._apply_theme()
         self._connect_controls()
         self._create_actions()
         self._create_menus()
+        self.controls.set_preferred_view_ready(self._orthographic_orientation is not None)
         self.statusBar().showMessage("Ready — choose a dataset or open a PLY, OBJ, or GLB model")
 
         if initial_path is not None:
@@ -163,6 +191,15 @@ class MainWindow(QMainWindow):
             saved_dataset = QSettings().value("workspace/last_dataset", "", type=str)
             if saved_dataset and Path(saved_dataset).is_dir():
                 self.set_dataset_root(saved_dataset)
+        QTimer.singleShot(0, self._center_on_screen)
+
+    def _center_on_screen(self) -> None:
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        frame = self.frameGeometry()
+        frame.moveCenter(screen.availableGeometry().center())
+        self.move(frame.topLeft())
 
     def _workspace_scroll(self, page: QWidget) -> QScrollArea:
         scroll = QScrollArea(self.tabs)
@@ -173,49 +210,257 @@ class MainWindow(QMainWindow):
         scroll.setWidget(page)
         return scroll
 
-    def _build_app_header(self) -> QWidget:
-        header = QWidget()
-        header.setObjectName("appHeader")
-        row = QHBoxLayout(header)
-        row.setContentsMargins(24, 8, 20, 8)
-        row.setSpacing(11)
+    def _build_sidebar(self) -> QWidget:
+        sidebar = QFrame()
+        sidebar.setObjectName("appSidebar")
+        sidebar.setFixedWidth(224)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(16, 18, 16, 16)
+        layout.setSpacing(4)
+
+        traffic_lights = QHBoxLayout()
+        traffic_lights.setSpacing(8)
+        for name in ("trafficRed", "trafficYellow", "trafficGreen"):
+            light = QLabel()
+            light.setObjectName(name)
+            light.setFixedSize(12, 12)
+            traffic_lights.addWidget(light)
+        traffic_lights.addStretch(1)
+        layout.addLayout(traffic_lights)
+        layout.addSpacing(22)
+
+        brand = QHBoxLayout()
+        brand.setSpacing(10)
+        logo = QLabel()
+        logo.setObjectName("sidebarLogo")
+        logo_path = ASSET_FOLDER / "openreef-icon.png"
+        if logo_path.is_file():
+            logo.setPixmap(
+                QPixmap(str(logo_path)).scaled(
+                    44,
+                    44,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        brand.addWidget(logo, 0, Qt.AlignmentFlag.AlignTop)
         name_box = QVBoxLayout()
-        name_box.setSpacing(0)
+        name_box.setSpacing(1)
         name = QLabel("OpenReef")
         name.setObjectName("appTitle")
-        caption = QLabel("OPEN-SOURCE REEF PHOTOGRAMMETRY")
+        caption = QLabel("REEF PHOTOGRAMMETRY")
         caption.setObjectName("appCaption")
         name_box.addWidget(name)
         name_box.addWidget(caption)
-        row.addLayout(name_box)
-        row.addStretch(1)
+        brand.addLayout(name_box, 1)
+        layout.addLayout(brand)
+        layout.addSpacing(24)
 
-        self.theme_button = QPushButton("Light")
-        self.theme_button.setObjectName("navbarButton")
+        self.navigation_buttons: dict[QWidget, QPushButton] = {}
+        layout.addWidget(self._sidebar_button("Projects", self.projects_page))
+
+        layout.addSpacing(14)
+        layout.addWidget(self._sidebar_divider())
+        layout.addSpacing(14)
+        layout.addWidget(self._sidebar_section("WORKFLOW"))
+        for label, page in (
+            ("Images", self.input_scroll),
+            ("Process", self.render_scroll),
+            ("Viewer", self.viewer_page),
+        ):
+            layout.addWidget(self._sidebar_button(label, page))
+
+        layout.addSpacing(14)
+        layout.addWidget(self._sidebar_divider())
+        layout.addSpacing(14)
+        layout.addWidget(self._sidebar_section("TOOLS"))
+        layout.addWidget(self._sidebar_button("MarkerTags", self.markertags_page))
+        layout.addWidget(self._sidebar_button("Settings", self.settings_page))
+
+        layout.addSpacing(14)
+        layout.addWidget(self._sidebar_divider())
+        layout.addSpacing(14)
+        layout.addWidget(self._sidebar_section("HELP"))
+        for label, url in (
+            ("Documentation", "https://github.com/marine-ecologist/openreef#readme"),
+            ("Examples", "https://github.com/marine-ecologist/openreef"),
+            ("Report issue", "https://github.com/marine-ecologist/openreef/issues/new"),
+        ):
+            button = QPushButton(label)
+            button.setObjectName("sidebarLink")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(
+                lambda checked=False, destination=url: QDesktopServices.openUrl(QUrl(destination))
+            )
+            layout.addWidget(button)
+        layout.addStretch(1)
+        version = QLabel("OpenReef v0.6.2")
+        version.setObjectName("sidebarVersion")
+        layout.addWidget(version)
+        self._sync_navigation()
+        return sidebar
+
+    @staticmethod
+    def _sidebar_section(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("sidebarSection")
+        return label
+
+    @staticmethod
+    def _sidebar_divider() -> QFrame:
+        divider = QFrame()
+        divider.setObjectName("sidebarDivider")
+        divider.setFrameShape(QFrame.Shape.HLine)
+        return divider
+
+    def _sidebar_button(self, label: str, page: QWidget) -> QPushButton:
+        button = QPushButton(label)
+        button.setObjectName("sidebarNav")
+        button.setCheckable(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(lambda checked=False, target=page: self._navigate(target))
+        self.navigation_buttons[page] = button
+        return button
+
+    def _navigate(self, page: QWidget) -> None:
+        self.tabs.setCurrentWidget(page)
+        self._sync_navigation()
+
+    def _sync_navigation(self) -> None:
+        if not hasattr(self, "navigation_buttons"):
+            return
+        current = self.tabs.currentWidget()
+        for page, button in self.navigation_buttons.items():
+            button.setChecked(page is current)
+
+    def _show_markertags(self) -> None:
+        self._navigate(self.markertags_page)
+
+    def _build_projects_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("projectsPage")
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(36, 32, 36, 32)
+        outer.setSpacing(14)
+        title = QLabel("Projects")
+        title.setObjectName("pageTitle")
+        outer.addWidget(title)
+        subtitle = QLabel(
+            "Open or switch the survey workspace used across Data, Process, and Viewer."
+        )
+        subtitle.setObjectName("pageSubtitle")
+        outer.addWidget(subtitle)
+        card = QFrame()
+        card.setObjectName("projectCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(20, 18, 20, 18)
+        self.project_name = QLabel("No project selected")
+        self.project_name.setObjectName("projectName")
+        self.project_path = QLabel("Choose a dataset folder to begin.")
+        self.project_path.setObjectName("pageSubtitle")
+        self.project_path.setWordWrap(True)
+        choose = QPushButton("Choose project…")
+        choose.setObjectName("primaryButton")
+        choose.clicked.connect(self.choose_dataset)
+        card_layout.addWidget(self.project_name)
+        card_layout.addWidget(self.project_path)
+        card_layout.addSpacing(8)
+        card_layout.addWidget(choose, 0, Qt.AlignmentFlag.AlignLeft)
+        outer.addWidget(card)
+        outer.addStretch(1)
+        return page
+
+    def _build_settings_page(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(36, 32, 36, 32)
+        outer.setSpacing(14)
+        title = QLabel("Settings")
+        title.setObjectName("pageTitle")
+        outer.addWidget(title)
+        subtitle = QLabel("Detailed processing controls for workflow steps 1–6")
+        subtitle.setObjectName("pageSubtitle")
+        outer.addWidget(subtitle)
+
+        outer.addWidget(self.render_page.settings_group, 1)
+
+        card = QFrame()
+        card.setObjectName("projectCard")
+        card_layout = QHBoxLayout(card)
+        card_layout.setContentsMargins(20, 18, 20, 18)
+        self.theme_button = QPushButton("Use light appearance")
         self.theme_button.clicked.connect(self._toggle_theme)
-        row.addWidget(self.theme_button)
-        github = QPushButton("GitHub")
-        github.setObjectName("navbarButton")
-        github.setIcon(bootstrap_icon("github", "#ffffff", 30))
+        github = QPushButton("Open OpenReef on GitHub")
+        github.setIcon(bootstrap_icon("github", "#d1d1d6", 24))
         github.clicked.connect(
             lambda: QDesktopServices.openUrl(
                 QUrl("https://github.com/marine-ecologist/openreef/")
             )
         )
-        row.addWidget(github)
-        logo = QLabel()
-        logo.setObjectName("headerLogo")
-        logo_path = ASSET_FOLDER / "openreef-icon.png"
-        if logo_path.is_file():
-            pixmap = QPixmap(str(logo_path)).scaled(
-                52,
-                52,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+        card_layout.addWidget(self.theme_button, 0, Qt.AlignmentFlag.AlignLeft)
+        card_layout.addWidget(github, 0, Qt.AlignmentFlag.AlignLeft)
+        outer.addWidget(card)
+        return page
+
+    def _build_markertags_page(self) -> QWidget:
+        """Placeholder catalogue for printable OpenReef field markers."""
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(36, 32, 36, 32)
+        outer.setSpacing(14)
+        title = QLabel("MarkerTags")
+        title.setObjectName("pageTitle")
+        outer.addWidget(title)
+        subtitle = QLabel(
+            "Choose a field marker design for scale and repeat-survey workflows. "
+            "Downloadable STL packages will be added here."
+        )
+        subtitle.setObjectName("pageSubtitle")
+        subtitle.setWordWrap(True)
+        outer.addWidget(subtitle)
+
+        cards = QHBoxLayout()
+        cards.setSpacing(14)
+        for name, description, availability in (
+            (
+                "MarkerTags",
+                "Temporary metric-scale markers using tag36h11 AprilTags with a "
+                "50 mm encoded-square edge.",
+                "STL download · coming soon",
+            ),
+            (
+                "Fixed reference markers",
+                "Long-term site references for repeat surveys. Detection support "
+                "will be added in a later release.",
+                "STL download · planned",
+            ),
+            (
+                "Scale and colour targets",
+                "Combined reference targets for future scale and colour workflows.",
+                "STL download · planned",
+            ),
+        ):
+            card = QFrame()
+            card.setObjectName("projectCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(20, 18, 20, 18)
+            heading = QLabel(name)
+            heading.setObjectName("projectName")
+            detail = QLabel(description)
+            detail.setObjectName("pageSubtitle")
+            detail.setWordWrap(True)
+            download = QPushButton(availability)
+            download.setEnabled(False)
+            download.setToolTip(
+                "This download will become available when the marker package is published."
             )
-            logo.setPixmap(pixmap)
-        row.addWidget(logo)
-        return header
+            card_layout.addWidget(heading)
+            card_layout.addWidget(detail)
+            card_layout.addStretch(1)
+            card_layout.addWidget(download)
+            cards.addWidget(card, 1)
+        outer.addLayout(cards, 1)
+        return page
 
     def _toggle_theme(self) -> None:
         self._dark_mode = not self._dark_mode
@@ -224,14 +469,12 @@ class MainWindow(QMainWindow):
 
     def _apply_theme(self) -> None:
         QApplication.instance().setStyleSheet(application_stylesheet(self._dark_mode))
-        self.theme_button.setText("Light" if self._dark_mode else "Dark")
+        self.theme_button.setText(
+            "Use light appearance" if self._dark_mode else "Use dark appearance"
+        )
         theme_icon = "sun-fill" if self._dark_mode else "moon-stars-fill"
-        self.theme_button.setIcon(bootstrap_icon(theme_icon, "#ffffff", 28))
-        for index, name in enumerate(("camera2", "cloud-fill", "box")):
-            selected = index == self.tabs.currentIndex()
-            self.tabs.setTabIcon(
-                index, bootstrap_icon(name, icon_color(self._dark_mode, selected), 30)
-            )
+        self.theme_button.setIcon(bootstrap_icon(theme_icon, icon_color(self._dark_mode), 24))
+        self._sync_navigation()
         if hasattr(self, "scene"):
             self.scene.set_theme(self._dark_mode)
         if hasattr(self, "points_page"):
@@ -239,7 +482,8 @@ class MainWindow(QMainWindow):
 
     def _connect_controls(self) -> None:
         self.controls.fit_requested.connect(self.scene.fit_to_view)
-        self.controls.projection_changed.connect(self.scene.set_parallel_projection)
+        self.controls.set_view_requested.connect(self._set_preferred_view)
+        self.controls.projection_changed.connect(self._set_parallel_projection)
         self.controls.display_mode_changed.connect(self.scene.set_display_mode)
         self.controls.point_size_changed.connect(self.scene.set_point_size)
         self.controls.standard_view_requested.connect(self.scene.set_standard_view)
@@ -270,11 +514,66 @@ class MainWindow(QMainWindow):
         self.points_page.roi_changed.connect(self._roi_changed)
         self.plotter.lasso_finished.connect(self._finish_lasso)
         self.plotter.lasso_cancelled.connect(self._lasso_cancelled)
+        self.plotter.measurement_tool_selected.connect(self.measurements.begin)
+        self.plotter.measurement_clear_requested.connect(self.measurements.clear_all)
+        self.plotter.measurement_point_clicked.connect(
+            self.measurements.add_display_point
+        )
+        self.plotter.measurement_close_requested.connect(
+            self.measurements.close_polygon
+        )
+        self.plotter.measurement_backspace_requested.connect(
+            self.measurements.remove_last_vertex
+        )
+        self.plotter.measurement_cancel_requested.connect(self.measurements.cancel)
         self.tabs.currentChanged.connect(self._tab_changed)
         self.runner.artifact_ready.connect(self._dense_artifact_ready)
         self.runner.job_finished.connect(self._pipeline_finished)
         self.runner.running_changed.connect(self.input_page.set_pipeline_busy)
         self.input_runner.running_changed.connect(self.render_page.set_external_busy)
+
+    @staticmethod
+    def _load_orthographic_orientation() -> CameraOrientation | None:
+        value = QSettings().value("viewer/orthographic_orientation", "", type=str)
+        if not value:
+            return None
+        try:
+            return CameraOrientation.from_json(value)
+        except ValueError:
+            QSettings().remove("viewer/orthographic_orientation")
+            return None
+
+    def _set_preferred_view(self) -> None:
+        document = self.scene.document
+        if (
+            document is None
+            or is_gaussian_splat(document)
+            or self.viewer_stack.currentWidget() is not self.plotter.interactor
+        ):
+            QMessageBox.information(
+                self,
+                "Set view",
+                "Open a mesh or point cloud in the native 3D viewer first.",
+            )
+            return
+        try:
+            orientation = CameraOrientation.capture(self.plotter)
+        except ValueError as exc:
+            QMessageBox.critical(self, "Could not set view", str(exc))
+            return
+        self._orthographic_orientation = orientation
+        QSettings().setValue("viewer/orthographic_orientation", orientation.to_json())
+        self.controls.set_preferred_view_ready(True)
+        self.statusBar().showMessage(
+            "View saved — future orthographic views will use this orientation"
+        )
+
+    def _set_parallel_projection(self, enabled: bool) -> None:
+        if enabled and self._orthographic_orientation is not None:
+            self._orthographic_orientation.apply(self.plotter)
+        self.scene.set_parallel_projection(enabled)
+        if enabled and self.scene.document is not None:
+            self.scene.fit_to_view()
 
     def _create_actions(self) -> None:
         self.dataset_action = QAction("Choose &dataset…", self)
@@ -288,6 +587,12 @@ class MainWindow(QMainWindow):
         self.screenshot_action = QAction("Save &screenshot…", self)
         self.screenshot_action.setShortcut("Ctrl+Shift+S")
         self.screenshot_action.triggered.connect(self.save_screenshot)
+
+        self.set_view_action = QAction("&Set view", self)
+        self.set_view_action.setToolTip(
+            "Use the current camera orientation for future orthographic views"
+        )
+        self.set_view_action.triggered.connect(self._set_preferred_view)
 
         self.save_view_action = QAction("Save viewpoint…", self)
         self.save_view_action.triggered.connect(self.save_viewpoint)
@@ -307,6 +612,9 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.quit_action)
 
+        view_menu = self.menuBar().addMenu("&View")
+        view_menu.addAction(self.set_view_action)
+
         camera_menu = self.menuBar().addMenu("&Camera")
         camera_menu.addAction(self.save_view_action)
         camera_menu.addAction(self.load_view_action)
@@ -321,16 +629,17 @@ class MainWindow(QMainWindow):
         if not str(path).strip():
             return
         root = Path(path).expanduser().resolve()
-        self._dataset_root = root
         self._sync_dataset_root(root)
         self.tabs.setCurrentWidget(self.input_scroll)
-        self.setWindowTitle(f"{root.name} — OpenReef 0.5")
+        self._sync_navigation()
+        self.setWindowTitle(f"{root.name} — OpenReef 0.6.2")
         self.statusBar().showMessage(f"Dataset: {root}")
 
     def _sync_dataset_root(self, path: str | Path) -> None:
         if not str(path).strip():
             return
         root = Path(path).expanduser().resolve()
+        project_changed = self._dataset_root is None or root != self._dataset_root
         self._dataset_root = root
         if root.is_dir():
             QSettings().setValue("workspace/last_dataset", str(root))
@@ -341,9 +650,16 @@ class MainWindow(QMainWindow):
             sync_model_links(DatasetLayout(root))
         except OSError as exc:
             self.statusBar().showMessage(f"Dataset selected; mesh shortcuts unavailable: {exc}")
-        self._refresh_model_catalog()
-        self.setWindowTitle(f"{root.name} — OpenReef 0.5")
-        self.statusBar().showMessage(f"Dataset: {root}")
+        sections = self._refresh_model_catalog()
+        reloaded = self._reload_viewer_for_project(sections) if project_changed else None
+        if hasattr(self, "project_name"):
+            self.project_name.setText(root.name)
+            self.project_path.setText(str(root))
+        self.setWindowTitle(f"{root.name} — OpenReef 0.6.2")
+        message = f"Dataset: {root}"
+        if reloaded is not None:
+            message += f" · Viewer reloaded: {reloaded.name}"
+        self.statusBar().showMessage(message)
 
     def _input_images_ready(self, dataset: str) -> None:
         self._sync_dataset_root(dataset)
@@ -356,17 +672,84 @@ class MainWindow(QMainWindow):
         if filename:
             self.load_path(Path(filename))
 
-    def _refresh_model_catalog(self, selected: Path | None = None) -> None:
+    def _refresh_model_catalog(
+        self, selected: Path | None = None
+    ) -> tuple[ModelCatalogSection, ...]:
         if self._dataset_root is None:
             self.controls.set_model_catalog(())
-            return
+            return ()
         sections = discover_model_catalog(DatasetLayout(self._dataset_root))
         self.controls.set_model_catalog(sections, selected)
+        return sections
 
-    def load_path(self, path: Path, *, select_in_catalog: bool = True) -> None:
+    def _reload_viewer_for_project(
+        self, sections: tuple[ModelCatalogSection, ...]
+    ) -> Path | None:
+        """Clear the old project scene and prepare the best result from the new project."""
+
+        self._leave_embedded_renderers()
+        self.scene.clear_document()
+        self.viewer_stack.setCurrentWidget(self.plotter.interactor)
+        self.controls.set_splat_mode(False)
+        self.controls.set_tileset_mode(False)
+        self.measurements.configure(None, (), available=False)
+        self.controls.set_model_available(False)
+        self.controls.set_mesh_available(False)
+        self.controls.set_history_available(False)
+        self.controls.set_stats("No model loaded for this project")
+        self.controls.set_web_export_ready(None)
+        self._last_web_export = None
+        self._edit_full_resolution = None
+        self._edit_history.clear()
+        self._edit_operations.clear()
+
+        preferred = preferred_model_path(sections)
+        if preferred is not None:
+            self.load_path(preferred, show_viewer=False)
+            return preferred
+
+        sparse = next(
+            (section for section in sections if section.title == "Sparse cloud"),
+            None,
+        )
+        if sparse and sparse.items and self._dataset_root is not None:
+            self.points_page.set_dataset_root(self._dataset_root)
+            self.viewer_stack.setCurrentWidget(self.points_page)
+            self.controls.select_sparse_view()
+            self.controls.set_stats("Sparse points and registered cameras")
+            return sparse.items[0].path
+        return None
+
+    def _viewer_markertag_metadata(self, source: Path) -> dict[str, object] | None:
+        if self._dataset_root is None:
+            return None
+        try:
+            source.resolve().relative_to(self._dataset_root.resolve())
+        except (OSError, ValueError):
+            return None
+        return read_viewer_metadata(DatasetLayout(self._dataset_root).markertags_metadata)
+
+    def _measurement_scale_is_valid(self, metadata: dict[str, object] | None) -> bool:
+        if self._dataset_root is None or not has_metric_scale(metadata):
+            return False
+        return stage_output_exists(
+            StageKey.MARKERTAGS, DatasetLayout(self._dataset_root)
+        )
+
+    def load_path(
+        self,
+        path: Path,
+        *,
+        select_in_catalog: bool = True,
+        show_viewer: bool = True,
+    ) -> None:
         self._leave_embedded_renderers()
         if path.name.casefold().endswith("_3d_tiles.json"):
-            self._load_tiled_model(path, select_in_catalog=select_in_catalog)
+            self._load_tiled_model(
+                path,
+                select_in_catalog=select_in_catalog,
+                show_viewer=show_viewer,
+            )
             return
         try:
             document = load_model(path)
@@ -404,11 +787,13 @@ class MainWindow(QMainWindow):
         else:
             self.scene.set_document(document)
             self.viewer_stack.setCurrentWidget(self.plotter.interactor)
+        metadata = self._viewer_markertag_metadata(document.source)
         stats = document.stats.as_text()
         if splat:
             stats += "\nRenderer: SuperSplat (WebGL)"
             if automatic_cleanup is not None:
                 stats += f"\nDisplay-only halo filter: {automatic_cleanup.removed:,} removed"
+        stats += f"\n\n{format_viewer_diagnostics(metadata)}"
         self.controls.set_stats(stats)
         self._edit_full_resolution = document
         self._edit_history.clear()
@@ -439,18 +824,29 @@ class MainWindow(QMainWindow):
                 f"Display filter active: {automatic_cleanup.retained:,} splats shown; "
                 f"{automatic_cleanup.removed:,} halo outliers hidden. Source unchanged."
             )
-        self.controls.set_mesh_available(
-            not splat and any(part.kind == "mesh" for part in document.parts)
+        has_mesh = not splat and any(part.kind == "mesh" for part in document.parts)
+        self.controls.set_mesh_available(has_mesh)
+        self.measurements.configure(
+            document,
+            self.scene.mesh_actors,
+            available=has_mesh and self._measurement_scale_is_valid(metadata),
         )
         self.controls.set_history_available(False)
-        self.setWindowTitle(f"{document.source.name} — OpenReef Viewer 0.5")
+        self.setWindowTitle(f"{document.source.name} — OpenReef Viewer 0.6.2")
         self.statusBar().showMessage(f"Loaded {document.source}")
         self.controls.set_workflow_crop_stage(self._workflow_stage(document))
         if select_in_catalog:
             self.controls.select_model(document.source)
-        self.tabs.setCurrentWidget(self.viewer_page)
+        if show_viewer:
+            self.tabs.setCurrentWidget(self.viewer_page)
 
-    def _load_tiled_model(self, path: Path, *, select_in_catalog: bool) -> None:
+    def _load_tiled_model(
+        self,
+        path: Path,
+        *,
+        select_in_catalog: bool,
+        show_viewer: bool = True,
+    ) -> None:
         try:
             manifest = read_tiled_model_manifest(path)
             self.tileset_page.load_path(manifest.viewer)
@@ -466,15 +862,19 @@ class MainWindow(QMainWindow):
         self.controls.set_splat_mode(False)
         self.controls.set_tileset_mode(True)
         self.controls.set_model_available(False)
+        metadata = self._viewer_markertag_metadata(path)
+        self.measurements.configure(None, (), available=False)
         self.controls.set_stats(
             f"Streaming 3D Tiles\nTileset: {manifest.tileset.name}\n"
-            "Detail is fetched progressively for the current camera view."
+            "Detail is fetched progressively for the current camera view.\n\n"
+            f"{format_viewer_diagnostics(metadata)}"
         )
-        self.setWindowTitle(f"{manifest.title} — OpenReef Viewer 0.5")
+        self.setWindowTitle(f"{manifest.title} — OpenReef Viewer 0.6.2")
         self.statusBar().showMessage(f"Opened streaming 3D Tiles from {manifest.tileset}")
         if select_in_catalog:
             self.controls.select_model(path)
-        self.tabs.setCurrentWidget(self.viewer_page)
+        if show_viewer:
+            self.tabs.setCurrentWidget(self.viewer_page)
 
     def _leave_embedded_renderers(self) -> None:
         """Free embedded browser surfaces before switching viewer modes."""
@@ -494,6 +894,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No model", "Open a model before drawing a lasso.")
             return
         self._lasso_mode = mode
+        self.measurements.cancel()
         self.tabs.setCurrentWidget(self.viewer_page)
         self.plotter.begin_lasso()
         action = "keep what is inside" if mode == "keep" else "delete what is inside"
@@ -502,6 +903,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
 
     def _tab_changed(self, index: int) -> None:
+        self._sync_navigation()
         self._apply_theme()
         if (
             self.tabs.widget(index) is self.viewer_page
@@ -529,6 +931,7 @@ class MainWindow(QMainWindow):
         if sparse and self._dataset_root is not None:
             self.points_page.set_dataset_root(self._dataset_root)
         if sparse:
+            self.measurements.configure(None, (), available=False)
             self._leave_embedded_renderers()
             self.controls.set_tileset_mode(False)
             self.viewer_stack.setCurrentWidget(self.points_page)
@@ -693,8 +1096,17 @@ class MainWindow(QMainWindow):
     def _show_edited_document(self, document: ModelDocument, viewpoint: CameraView) -> None:
         self.scene.set_document(document)
         viewpoint.apply(self.plotter)
-        self.controls.set_stats(document.stats.as_text())
-        self.setWindowTitle(f"{document.source.name} — OpenReef Viewer 0.5")
+        metadata = self._viewer_markertag_metadata(document.source)
+        self.controls.set_stats(
+            f"{document.stats.as_text()}\n\n{format_viewer_diagnostics(metadata)}"
+        )
+        self.measurements.configure(
+            document,
+            self.scene.mesh_actors,
+            available=self._measurement_scale_is_valid(metadata)
+            and any(part.kind == "mesh" for part in document.parts),
+        )
+        self.setWindowTitle(f"{document.source.name} — OpenReef Viewer 0.6.2")
 
     def _undo_edit(self) -> None:
         if not self._edit_history:

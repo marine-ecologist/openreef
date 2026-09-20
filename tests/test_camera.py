@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from openreef.core.camera import CameraView, orthomosaic_image_size, pan_camera
+from openreef.core.camera import (
+    CameraOrientation,
+    CameraView,
+    orthomosaic_image_size,
+    pan_camera,
+)
 
 
 class FakeCamera:
@@ -12,6 +17,18 @@ class FakeCamera:
     parallel_projection = True
     parallel_scale = 5.0
     view_angle = 30.0
+
+
+class FakePlotter:
+    def __init__(self) -> None:
+        self.camera = FakeCamera()
+        self.camera.position = (10.0, 0.0, 0.0)
+        self.camera.focal_point = (0.0, 0.0, 0.0)
+        self.camera.up = (0.0, 0.0, 1.0)
+
+    @property
+    def camera_position(self):
+        return self.camera.position, self.camera.focal_point, self.camera.up
 
 
 def sample_view() -> CameraView:
@@ -52,6 +69,26 @@ def test_viewpoint_rejects_non_boolean_projection() -> None:
     data["parallel_projection"] = "false"
     with pytest.raises(ValueError, match="parallel_projection"):
         CameraView.from_mapping(data)
+
+
+def test_camera_orientation_json_round_trip() -> None:
+    orientation = CameraOrientation(direction=(-1.0, 0.0, 0.0), view_up=(0.0, 0.0, 1.0))
+
+    assert CameraOrientation.from_json(orientation.to_json()) == orientation
+
+
+def test_camera_orientation_reuses_direction_without_reusing_model_position() -> None:
+    plotter = FakePlotter()
+    orientation = CameraOrientation.capture(plotter)
+    plotter.camera.position = (4.0, 8.0, 3.0)
+    plotter.camera.focal_point = (4.0, 5.0, 3.0)
+    original_distance = 3.0
+
+    orientation.apply(plotter)
+
+    assert plotter.camera.focal_point == (4.0, 5.0, 3.0)
+    assert plotter.camera.position == pytest.approx((4.0 + original_distance, 5.0, 3.0))
+    assert plotter.camera.up == (0.0, 0.0, 1.0)
 
 
 def test_screen_pan_moves_camera_and_focal_point_together() -> None:

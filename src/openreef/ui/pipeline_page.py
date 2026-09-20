@@ -41,6 +41,7 @@ from openreef.pipeline.stages import (
     DatasetLayout,
     PipelineOptions,
     StageKey,
+    markertag_status,
     stage_output_exists,
     textured_output_for_level,
 )
@@ -151,7 +152,8 @@ class PipelinePage(QWidget):
         titles = {
             "generate": (
                 "Sparse Cloud",
-                "Build the COLMAP sparse cloud and camera solution, then prepare PINHOLE images.",
+                "Build the COLMAP camera solution, solve metric scale from MarkerTags, "
+                "then prepare PINHOLE images.",
             ),
             "dense": (
                 "Dense Cloud",
@@ -256,6 +258,18 @@ class PipelinePage(QWidget):
             self.overlap = QSpinBox()
             self.overlap.setRange(2, 100)
             self.overlap.setValue(10)
+            self.marker_tag_family = QComboBox()
+            self.marker_tag_family.addItems(
+                ("tag36h11", "tag36h10", "tag25h9", "tag16h5")
+            )
+            self.marker_tag_size_mm = QDoubleSpinBox()
+            self.marker_tag_size_mm.setRange(1.0, 1000.0)
+            self.marker_tag_size_mm.setDecimals(1)
+            self.marker_tag_size_mm.setValue(50.0)
+            self.marker_tag_size_mm.setSuffix(" mm")
+            self.marker_tag_size_mm.setToolTip(
+                "Encoded AprilTag square edge. The 90 mm disc is not used for scale."
+            )
             form_left = QFormLayout()
             form_left.addRow("CPU budget", self.cores)
             form_left.addRow("RAM limit", self.memory)
@@ -263,6 +277,8 @@ class PipelinePage(QWidget):
             form_right = QFormLayout()
             form_right.addRow("Max image size", self.max_image_size)
             form_right.addRow("Sequence overlap", self.overlap)
+            form_right.addRow("MarkerTag family", self.marker_tag_family)
+            form_right.addRow("MarkerTag edge", self.marker_tag_size_mm)
             form_right.addRow(self.single_camera)
             form_right.addRow(self.use_gpu)
         elif self.page_kind == "dense":
@@ -542,6 +558,8 @@ class PipelinePage(QWidget):
                 single_camera=self.single_camera.isChecked(),
                 max_image_size=self.max_image_size.value(),
                 sequential_overlap=self.overlap.value(),
+                marker_tag_family=self.marker_tag_family.currentText(),
+                marker_tag_size_m=self.marker_tag_size_mm.value() / 1000.0,
             )
         if self.page_kind == "gaussian":
             return PipelineOptions(
@@ -602,7 +620,12 @@ class PipelinePage(QWidget):
         self.dataset_summary.setText(f"{count:,} images found in {layout.images}")
         for stage, card in self.cards.items():
             if stage_output_exists(stage, layout):
-                card.set_status("ready", "Existing output found")
+                detail = (
+                    markertag_status(layout)
+                    if stage == StageKey.MARKERTAGS
+                    else "Existing output found"
+                )
+                card.set_status("ready", detail)
             else:
                 card.set_status("waiting", "Waiting")
         if self.page_kind == "texture":
@@ -662,6 +685,10 @@ class PipelinePage(QWidget):
             return
         card = self.cards.get(stage)
         if card:
+            if stage == StageKey.MARKERTAGS and state == "complete":
+                value = self.dataset_path.text().strip()
+                if value:
+                    detail = markertag_status(DatasetLayout.from_path(value))
             card.set_status(state, detail)
 
     def _current_stage_changed(self, label: str) -> None:

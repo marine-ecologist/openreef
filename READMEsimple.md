@@ -13,19 +13,17 @@ photogrammetry software. OpenReef follows the same broad idea as
 collection, visible quality checks, repeatable processing, and clearly stored
 outputs.
 
-OpenReef is under active development. Version 0.5 can build and inspect 3D
-models, but it does not yet provide scaling, alignment between surveys, or
-ecological measurements. Until those tools are added, an OpenReef model should
-be treated as a visual and quality-control product rather than a fully
-measurement-ready monitoring product.
+OpenReef is under active development. Version 0.6.2 can build and scale 3D models with
+temporary MarkerTags and provides initial metric length and surface-area inspection. It
+does not yet align repeat surveys or export a complete ecological measurement dataset.
 
 ## Quick start
 
 1. Double-click **OpenReef.app** or **OpenReef.command**.
 2. Choose or create a dataset folder for one survey or colony.
-3. Use **Input images** to add photographs or extract frames from video.
-4. Use **Render images** to work from the sparse cloud through to a textured
-   mesh or optional Gaussian splat, checking results in **3D viewer**.
+3. Use **Data** to add photographs or extract frames from video.
+4. Use **Process** to work from the sparse cloud through to a textured
+   mesh or optional Gaussian splat, checking results in **Viewer**.
 
 If OpenReef has not been installed on the computer, see **Python setup and
 launch** in the Advanced notes at the bottom of this page.
@@ -33,7 +31,7 @@ launch** in the Advanced notes at the bottom of this page.
 ## The workflow in plain language
 
 ```text
-Input images → Render images [Sparse → Crop → Dense → Texture → Splat] → 3D viewer
+Data → Process [Sparse → MarkerTags → Crop → Dense → Texture → Splat → 3D Tiles] → Viewer
 ```
 
 A typical project moves from left to right. Render images detects work already
@@ -257,7 +255,7 @@ together.
 
 - Use the included macOS or Windows launcher to view the model locally.
 - Use **Export compact (<100 MB)** when preparing a GLB for GitHub Pages.
-- After **Gaussian splat** in Render images, use the narrow **3D tiles** box and
+- After **Gaussian splat** in Process, use the narrow **3D tiles** box and
   select the highest-detail textured GLB in `models/`. OpenReef uses Assimp to
   generate a coarse root and spatial detail tiles, packages the web viewer, and
   adds the result to `models/`. Choose **3D tiles → Streaming viewer** in the 3D
@@ -292,12 +290,12 @@ launcher, or publish it through GitHub Pages to create a shareable web address.
 
 ## Current limitations
 
-Version 0.5 does not yet provide:
+Version 0.6.2 does not yet provide:
 
 - automatic mesh repair or hole filling;
 - real-world scale from scale bars or targets;
 - alignment of repeat surveys;
-- ecological measurements or change analysis;
+- measurement export, volume analysis, or change analysis;
 - automatic per-image masks for moving water and survey backgrounds; or
 - automatic online/GPU-server processing.
 
@@ -491,8 +489,10 @@ ruff check .
 
 ### Roadmap
 
-- **0.5:** Gaussian image masking and spatial cleanup, richer material controls,
-  model history, mesh repair, scale metadata, measurements, and annotations.
+- **0.6:** MarkerTag metric scaling, spatial 3D Tiles, and the neutral sidebar
+  workspace design.
+- **Next:** richer material controls, model history, mesh repair, measurements,
+  and annotations.
 - **Later:** alignment, batch and timelapse processing, online GPU workers, and
   scientific change analysis.
 

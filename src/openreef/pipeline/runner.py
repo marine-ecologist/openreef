@@ -16,6 +16,7 @@ from openreef.pipeline.stages import (
     StageConfigurationError,
     StageKey,
     build_stage_command,
+    markertag_status,
     selected_dense_levels,
     stage_output_exists,
     sync_model_links,
@@ -185,9 +186,16 @@ class PipelineRunner(QObject):
             return
 
         self._completed += 1
-        self.stage_changed.emit(stage.value, "complete", "Complete")
+        result_state = "complete"
+        result_detail = "Complete"
+        if stage == StageKey.MARKERTAGS:
+            result_detail = markertag_status(self._layout)
+            if "Unscaled" in result_detail:
+                result_state = "attention"
+        self.stage_changed.emit(stage.value, result_state, result_detail)
         self.progress_changed.emit(self._completed, self._total)
-        self.output_received.emit(f"\n✓ {STAGE_LABELS[stage]} complete\n")
+        symbol = "✓" if result_state == "complete" else "!"
+        self.output_received.emit(f"\n{symbol} {STAGE_LABELS[stage]} · {result_detail}\n")
         try:
             links = sync_model_links(self._layout)
         except OSError as exc:

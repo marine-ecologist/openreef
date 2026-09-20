@@ -19,7 +19,7 @@ from openreef.core.glb_edit import (
 
 SUPPORTED_WEB_FORMATS = frozenset({".glb", ".ply"})
 THREE_VERSION = "0.186.0"
-TILES_RENDERER_VERSION = "0.5.0"
+TILES_RENDERER_VERSION = "0.6.2"
 GITHUB_REGULAR_FILE_LIMIT = 100 * 1024 * 1024
 
 

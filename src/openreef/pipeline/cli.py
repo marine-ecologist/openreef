@@ -57,6 +57,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--single-camera", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-image-size", type=int, default=3200)
     parser.add_argument("--sequential-overlap", type=int, default=10)
+    parser.add_argument(
+        "--marker-tag-family",
+        default="tag36h11",
+        choices=("tag16h5", "tag25h9", "tag36h10", "tag36h11"),
+        help="AprilTag family used by non-permanent MarkerTags",
+    )
+    parser.add_argument(
+        "--marker-tag-size-m",
+        type=float,
+        default=0.050,
+        help="Known encoded-square edge length in metres (default: 0.050)",
+    )
     parser.add_argument("--resolution-level", type=int, default=1)
     parser.add_argument("--max-resolution", type=int, default=2560)
     parser.add_argument("--number-views", type=int, default=5)
@@ -145,6 +157,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
         single_camera=args.single_camera,
         max_image_size=args.max_image_size,
         sequential_overlap=args.sequential_overlap,
+        marker_tag_family=args.marker_tag_family,
+        marker_tag_size_m=args.marker_tag_size_m,
         resolution_level=args.resolution_level,
         max_resolution=args.max_resolution,
         number_views=args.number_views,

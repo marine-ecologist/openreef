@@ -293,3 +293,9 @@ def test_glb_material_import_ignores_non_mesh_helper_actors() -> None:
 
     assert plotter.added_mesh is not None
     assert plotter.added_mesh.GetProperty().material == "embedded texture"
+
+    controller.clear_document()
+
+    assert controller.document is None
+    assert controller.mesh_actors == ()
+    assert set(plotter.renderer.actors) == {"axes"}

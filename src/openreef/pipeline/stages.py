@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -17,6 +18,7 @@ class StageKey(str, Enum):
     FEATURES = "features"
     MATCHING = "matching"
     SPARSE = "sparse"
+    MARKERTAGS = "markertags"
     UNDISTORT = "undistort"
     OPENMVS_IMPORT = "openmvs_import"
     DENSE = "dense"
@@ -29,6 +31,7 @@ GENERATE_STAGES = (
     StageKey.FEATURES,
     StageKey.MATCHING,
     StageKey.SPARSE,
+    StageKey.MARKERTAGS,
     StageKey.UNDISTORT,
 )
 DENSE_STAGES = (StageKey.OPENMVS_IMPORT, StageKey.DENSE, StageKey.MESH)
@@ -41,6 +44,7 @@ STAGE_LABELS = {
     StageKey.FEATURES: "Feature extraction",
     StageKey.MATCHING: "Sequential matching",
     StageKey.SPARSE: "Sparse reconstruction",
+    StageKey.MARKERTAGS: "MarkerTags detected",
     StageKey.UNDISTORT: "Undistort / PINHOLE",
     StageKey.OPENMVS_IMPORT: "OpenMVS import",
     StageKey.DENSE: "Dense point cloud",
@@ -53,6 +57,7 @@ STAGE_OUTPUTS = {
     StageKey.FEATURES: "colmap/database.db",
     StageKey.MATCHING: "matched image pairs",
     StageKey.SPARSE: "colmap/sparse/0",
+    StageKey.MARKERTAGS: "models/<dataset>_markertags.json",
     StageKey.UNDISTORT: "colmap/dense",
     StageKey.OPENMVS_IMPORT: "openmvs/scene.mvs",
     StageKey.DENSE: "Selected Original / Medium / Low / Compact clouds",
@@ -88,6 +93,8 @@ class PipelineOptions:
     max_image_size: int = 3200
     undistort_max_image_size: int | None = None
     sequential_overlap: int = 10
+    marker_tag_family: str = "tag36h11"
+    marker_tag_size_m: float = 0.050
     resolution_level: int = 1
     max_resolution: int = 2560
     number_views: int = 5
@@ -205,6 +212,14 @@ class DatasetLayout:
         return self.sparse / "selected"
 
     @property
+    def metric_sparse(self) -> Path:
+        return self.colmap / "metric" / "sparse"
+
+    @property
+    def markertags_metadata(self) -> Path:
+        return self.models / f"{dataset_label(self)}_markertags.json"
+
+    @property
     def dense(self) -> Path:
         return self.colmap / "dense"
 
@@ -258,7 +273,7 @@ class DatasetLayout:
 
     @property
     def sparse_cloud(self) -> Path | None:
-        model = self.sparse_model()
+        model = self.processing_sparse_model()
         return model / "points3D.ply" if model else None
 
     @property
@@ -324,6 +339,27 @@ class DatasetLayout:
                 return selected
         return max(candidates, key=sparse_model_score)
 
+    def processing_sparse_model(self) -> Path | None:
+        """Return the metric MarkerTag model when its source model still matches."""
+        source = self.sparse_model()
+        if source is None or not self.markertags_metadata.is_file():
+            return source
+        try:
+            state = json.loads(self.markertags_metadata.read_text(encoding="utf-8"))
+            complete = all(
+                (self.metric_sparse / name).is_file()
+                for name in ("cameras.bin", "images.bin", "points3D.bin")
+            )
+            if (
+                state.get("scaled") is True
+                and state.get("source_model") == sparse_model_identity(source)
+                and complete
+            ):
+                return self.metric_sparse
+        except (OSError, ValueError):
+            pass
+        return source
+
     def select_sparse_model(self, model: Path) -> None:
         selected = model.resolve()
         candidates = {candidate.resolve() for candidate in self.sparse_models()}
@@ -355,6 +391,42 @@ def sparse_model_identity(model: Path) -> dict[str, object]:
         stat = (model / name).stat()
         files[name] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
     return {"folder": model.name, "files": files}
+
+
+def markertag_status(layout: DatasetLayout) -> str:
+    """Return a concise user-facing summary of saved MarkerTag metadata."""
+    try:
+        state = json.loads(layout.markertags_metadata.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "Not scanned"
+    count = int(state.get("unique_tags", 0))
+    prefix = f"MarkerTags detected: {count}"
+    if state.get("scaled") is True:
+        scale = float(state.get("scale_factor", 0.0))
+        residual_mm = float(state.get("residual_rms_m", 0.0)) * 1000
+        scale_metadata = state.get("scale", {})
+        marker_metadata = state.get("markertags", {})
+        if not isinstance(scale_metadata, dict):
+            scale_metadata = {}
+        if not isinstance(marker_metadata, dict):
+            marker_metadata = {}
+        dispersion = scale_metadata.get(
+            "scale_residual_pct", state.get("scale_residual_pct")
+        )
+        tags_used = int(
+            marker_metadata.get("tags_used_for_scale", state.get("inlier_tags", 0))
+        )
+        quality = (
+            f"Robust scale SD: {float(dispersion):.2f}% across {tags_used} tags"
+            if dispersion is not None and tags_used >= 2
+            else "Robust scale SD: — (needs at least 2 tags)"
+        )
+        return (
+            f"{prefix} · Scale: {scale:.6g} · {quality} · "
+            f"Edge residual: {residual_mm:.2f} mm"
+        )
+    reason = str(state.get("reason") or state.get("status", "unscaled")).strip()
+    return f"{prefix} · Unscaled — {reason}"
 
 
 def _colmap_binary_count(path: Path) -> int:
@@ -431,7 +503,7 @@ def main_model_outputs(layout: DatasetLayout) -> dict[str, Path]:
     if colmap_fused.is_file():
         outputs[f"{label}_sparsecloud.ply"] = colmap_fused
     else:
-        sparse_model = layout.sparse_model()
+        sparse_model = layout.processing_sparse_model()
         sparse_cloud = sparse_model / "points3D.ply" if sparse_model else None
         if sparse_cloud and sparse_cloud.is_file():
             outputs[f"{label}_sparsecloud.ply"] = sparse_cloud
@@ -443,7 +515,7 @@ def main_model_outputs(layout: DatasetLayout) -> dict[str, Path]:
             )
             if profile.is_file():
                 outputs[f"{label}_gaussian_{level}.ply"] = profile
-    sparse_model = layout.sparse_model()
+    sparse_model = layout.processing_sparse_model()
     if sparse_model is not None:
         for level in ("medium", "low", "compact"):
             profile = sparse_model / f"points3D_{level}.ply"
@@ -466,6 +538,7 @@ def _managed_model_link(path: Path, layout: DatasetLayout) -> bool:
         target.is_relative_to(layout.openmvs)
         or target.is_relative_to(layout.dense)
         or target.is_relative_to(layout.sparse)
+        or target.is_relative_to(layout.metric_sparse.parent)
         or target.is_relative_to(layout.gaussian)
     )
 
@@ -511,7 +584,7 @@ def sync_model_links(layout: DatasetLayout) -> tuple[Path, ...]:
     if legacy_pointcloud.is_symlink() and not legacy_pointcloud.exists():
         legacy_pointcloud.unlink()
 
-    sparse_model = layout.sparse_model()
+    sparse_model = layout.processing_sparse_model()
     images_binary = sparse_model / "images.bin" if sparse_model else None
     if images_binary and images_binary.is_file():
         try:
@@ -519,7 +592,12 @@ def sync_model_links(layout: DatasetLayout) -> tuple[Path, ...]:
 
             poses = read_camera_poses(images_binary)
             camera_manifest = layout.models / f"{dataset_label(layout)}_cameras.json"
-            save_camera_manifest(poses, camera_manifest)
+            coordinate_system = (
+                "metric COLMAP world coordinates (metres)"
+                if sparse_model == layout.metric_sparse
+                else "COLMAP world coordinates"
+            )
+            save_camera_manifest(poses, camera_manifest, coordinate_system)
         except (OSError, ValueError):
             pass
 
@@ -733,14 +811,45 @@ def stage_output_exists(
         return _database_table_has_rows(layout.database, "two_view_geometries")
     if stage == StageKey.SPARSE:
         return layout.sparse_model() is not None
+    if stage == StageKey.MARKERTAGS:
+        source = layout.sparse_model()
+        if source is None or not layout.markertags_metadata.is_file():
+            return False
+        try:
+            state = json.loads(layout.markertags_metadata.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if state.get("source_model") != sparse_model_identity(source):
+            return False
+        configured_family = state.get("requested_family", state.get("family"))
+        if options is not None and (
+            configured_family != options.marker_tag_family
+            or not math.isclose(
+                float(state.get("tag_edge_m", 0.0)), options.marker_tag_size_m
+            )
+        ):
+            return False
+        return state.get("status") in {
+            "scaled",
+            "no_detections",
+            "insufficient_observations",
+            "rejected_inconsistent",
+            "detection_unavailable",
+        }
     if stage == StageKey.UNDISTORT:
+        if (
+            options is not None
+            and layout.markertags_metadata.is_file()
+            and not stage_output_exists(StageKey.MARKERTAGS, layout, options)
+        ):
+            return False
         sparse = layout.dense / "sparse"
         outputs_exist = (layout.dense / "images").is_dir() and all(
             (sparse / name).is_file() for name in ("cameras.bin", "images.bin", "points3D.bin")
         )
         if not outputs_exist:
             return False
-        model = layout.sparse_model()
+        model = layout.processing_sparse_model()
         if model is None:
             return False
         if not layout.undistort_selection_state.is_file():
@@ -757,14 +866,14 @@ def stage_output_exists(
             else layout.dense / "sparse" / "images.bin"
         )
         return (
-            stage_output_exists(StageKey.UNDISTORT, layout)
+            stage_output_exists(StageKey.UNDISTORT, layout, options)
             and layout.scene.is_file()
             and _newer_than(layout.scene, marker)
             and _roi_state_matches(layout)
         )
     if stage == StageKey.DENSE:
         complete = (
-            stage_output_exists(StageKey.OPENMVS_IMPORT, layout)
+            stage_output_exists(StageKey.OPENMVS_IMPORT, layout, options)
             and layout.scene.is_file()
             and layout.dense_scene.is_file()
             and layout.dense_cloud.is_file()
@@ -778,7 +887,8 @@ def stage_output_exists(
         return complete
     if stage == StageKey.MESH:
         complete = (
-            _roi_state_matches(layout)
+            stage_output_exists(StageKey.DENSE, layout, options)
+            and _roi_state_matches(layout)
             and layout.dense_scene.is_file()
         )
         if options:
@@ -810,6 +920,12 @@ def stage_output_exists(
         output = textured_output_for_level(layout, "original")
         return output.is_file() and _newer_than(output, layout.surface_mesh)
     if stage == StageKey.GAUSSIAN:
+        if (
+            options is not None
+            and layout.markertags_metadata.is_file()
+            and not stage_output_exists(StageKey.MARKERTAGS, layout, options)
+        ):
+            return False
         if not layout.gaussian_output.is_file():
             return False
         if layout.roi.is_file() and not _roi_state_matches(layout):
@@ -843,6 +959,15 @@ def validate_stage(
     elif stage in (StageKey.MATCHING, StageKey.SPARSE):
         if not layout.database.is_file():
             raise StageConfigurationError("Run feature extraction first; database.db is missing.")
+    elif stage == StageKey.MARKERTAGS:
+        if layout.sparse_model() is None:
+            raise StageConfigurationError(
+                "Run sparse reconstruction first; no sparse model was found."
+            )
+        if not layout.images.is_dir() or layout.image_count() == 0:
+            raise StageConfigurationError("MarkerTags need the source images folder.")
+        if options is None or options.marker_tag_size_m <= 0:
+            raise StageConfigurationError("MarkerTag edge length must be greater than zero.")
     elif stage == StageKey.UNDISTORT:
         if layout.sparse_model() is None:
             raise StageConfigurationError(
@@ -1003,8 +1128,32 @@ def build_stage_command(
             ),
             layout.root,
         )
-    if stage == StageKey.UNDISTORT:
+    if stage == StageKey.MARKERTAGS:
         sparse_model = layout.sparse_model()
+        assert sparse_model is not None
+        return StageCommand(
+            sys.executable,
+            (
+                "-m",
+                "openreef.pipeline.tasks",
+                "markertags",
+                "--images",
+                str(layout.images),
+                "--sparse-model",
+                str(sparse_model),
+                "--metric-model",
+                str(layout.metric_sparse),
+                "--metadata",
+                str(layout.markertags_metadata),
+                "--family",
+                options.marker_tag_family,
+                "--tag-size-m",
+                str(options.marker_tag_size_m),
+            ),
+            layout.root,
+        )
+    if stage == StageKey.UNDISTORT:
+        sparse_model = layout.processing_sparse_model()
         assert sparse_model is not None
         return StageCommand(
             sys.executable,

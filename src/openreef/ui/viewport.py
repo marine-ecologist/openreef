@@ -19,7 +19,7 @@ from PySide6.QtGui import (
     QResizeEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 from pyvistaqt import QtInteractor
 
 from openreef.core.camera import pan_camera
@@ -137,11 +137,68 @@ class LassoOverlay(QWidget):
             painter.drawPolyline(polygon)
 
 
+class MeasurementToolbar(QFrame):
+    """Compact floating controls shown only for a confirmed metric mesh."""
+
+    tool_selected = Signal(str)
+    clear_requested = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("measurementToolbar")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 9, 10, 9)
+        outer.setSpacing(6)
+
+        self.scale_status = QLabel("MarkerTags detected · scaled")
+        self.scale_status.setObjectName("measurementScaleStatus")
+        outer.addWidget(self.scale_status)
+
+        row = QHBoxLayout()
+        row.setSpacing(5)
+        self.length_button = QPushButton("↔  Length")
+        self.polygon_button = QPushButton("◇  Surface polygon")
+        self.clear_button = QPushButton("Clear")
+        for button in (self.length_button, self.polygon_button):
+            button.setObjectName("measurementToolButton")
+            button.setCheckable(True)
+        self.clear_button.setObjectName("measurementClearButton")
+        self.length_button.clicked.connect(lambda: self.tool_selected.emit("length"))
+        self.polygon_button.clicked.connect(lambda: self.tool_selected.emit("polygon"))
+        self.clear_button.clicked.connect(self.clear_requested)
+        row.addWidget(self.length_button)
+        row.addWidget(self.polygon_button)
+        row.addWidget(self.clear_button)
+        outer.addLayout(row)
+
+        self.hint = QLabel()
+        self.hint.setObjectName("measurementHint")
+        self.hint.setWordWrap(True)
+        self.hint.hide()
+        outer.addWidget(self.hint)
+        self.hide()
+
+    def set_mode(self, mode: str | None) -> None:
+        self.length_button.setChecked(mode == "length")
+        self.polygon_button.setChecked(mode == "polygon")
+
+    def set_hint(self, text: str) -> None:
+        self.hint.setText(text)
+        self.hint.setVisible(bool(text))
+        self.adjustSize()
+
+
 class ReefInteractor(QtInteractor):
     """Qt/VTK viewport with Tinkercad-style mouse and trackpad navigation."""
 
     lasso_finished = Signal(object)
     lasso_cancelled = Signal()
+    measurement_tool_selected = Signal(str)
+    measurement_clear_requested = Signal()
+    measurement_point_clicked = Signal(float, float)
+    measurement_close_requested = Signal()
+    measurement_backspace_requested = Signal()
+    measurement_cancel_requested = Signal()
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
@@ -153,8 +210,13 @@ class ReefInteractor(QtInteractor):
         self.lasso_overlay = LassoOverlay(self)
         self.lasso_overlay.finished.connect(self.lasso_finished)
         self.lasso_overlay.cancelled.connect(self.lasso_cancelled)
+        self.measurement_toolbar = MeasurementToolbar(self)
+        self.measurement_toolbar.tool_selected.connect(self.measurement_tool_selected)
+        self.measurement_toolbar.clear_requested.connect(self.measurement_clear_requested)
+        self._measurement_mode: str | None = None
 
     def begin_lasso(self) -> None:
+        self.set_measurement_mode(None)
         self.lasso_overlay.begin()
 
     def cancel_lasso(self) -> None:
@@ -164,6 +226,35 @@ class ReefInteractor(QtInteractor):
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API name
         super().resizeEvent(event)
         self.lasso_overlay.setGeometry(self.rect())
+        self._position_measurement_toolbar()
+
+    def set_measurement_available(self, available: bool, status: str = "") -> None:
+        self.measurement_toolbar.scale_status.setText(status)
+        self.measurement_toolbar.setVisible(available)
+        if not available:
+            self.set_measurement_mode(None)
+        self._position_measurement_toolbar()
+        if available:
+            self.measurement_toolbar.raise_()
+
+    def set_measurement_mode(self, mode: str | None) -> None:
+        self._measurement_mode = mode
+        self.measurement_toolbar.set_mode(mode)
+        if mode is not None:
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            self.setFocus()
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.unsetCursor()
+
+    def set_measurement_hint(self, text: str) -> None:
+        self.measurement_toolbar.set_hint(text)
+        self._position_measurement_toolbar()
+
+    def _position_measurement_toolbar(self) -> None:
+        toolbar = self.measurement_toolbar
+        toolbar.adjustSize()
+        toolbar.move(18, max(18, self.height() - toolbar.height() - 18))
 
     def event(self, event: QEvent) -> bool:
         if event.type() == QEvent.Type.NativeGesture:
@@ -203,6 +294,16 @@ class ReefInteractor(QtInteractor):
         )
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API name
+        if (
+            self._measurement_mode is not None
+            and event.button() == Qt.MouseButton.LeftButton
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+        ):
+            self.measurement_point_clicked.emit(
+                float(event.position().x()), float(event.position().y())
+            )
+            event.accept()
+            return
         target = tinkercad_navigation_button(event.button(), event.modifiers())
         if target is None:
             self._navigation_press_active = False
@@ -211,6 +312,29 @@ class ReefInteractor(QtInteractor):
         self._navigation_press_active = True
         super().mousePressEvent(self._as_navigation_event(event, target))
         event.accept()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API name
+        if self._measurement_mode == "polygon" and event.button() == Qt.MouseButton.LeftButton:
+            self.measurement_close_requested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt API name
+        if self._measurement_mode is not None:
+            if event.key() == Qt.Key.Key_Escape:
+                self.measurement_cancel_requested.emit()
+                event.accept()
+                return
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.measurement_close_requested.emit()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Backspace:
+                self.measurement_backspace_requested.emit()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API name
         if self._navigation_press_active:

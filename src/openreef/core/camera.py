@@ -83,6 +83,72 @@ def _pair(value: object, field: str) -> tuple[float, float]:
 
 
 @dataclass(frozen=True)
+class CameraOrientation:
+    """A reusable viewing direction, independent of a model's size and position."""
+
+    direction: tuple[float, float, float]
+    view_up: tuple[float, float, float]
+
+    @classmethod
+    def capture(cls, plotter: Any) -> CameraOrientation:
+        position, focal_point, view_up = plotter.camera_position
+        position = _vector3(position, "position")
+        focal_point = _vector3(focal_point, "focal_point")
+        return cls(
+            direction=_normalized(
+                tuple(focal_point[index] - position[index] for index in range(3))
+            ),
+            view_up=_normalized(_vector3(view_up, "view_up")),
+        )
+
+    def apply(self, plotter: Any) -> None:
+        """Apply the direction while retaining the current target and camera distance."""
+
+        camera = plotter.camera
+        position = _vector3(camera.position, "position")
+        focal_point = _vector3(camera.focal_point, "focal_point")
+        distance = math.sqrt(
+            sum((position[index] - focal_point[index]) ** 2 for index in range(3))
+        )
+        direction = _normalized(self.direction)
+        view_up = _normalized(self.view_up)
+        camera.position = tuple(
+            focal_point[index] - direction[index] * max(distance, 1e-9)
+            for index in range(3)
+        )
+        camera.focal_point = focal_point
+        camera.up = view_up
+
+    def to_dict(self) -> dict[str, object]:
+        return {"schema_version": 1, **asdict(self)}
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), separators=(",", ":"))
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, object]) -> CameraOrientation:
+        if data.get("schema_version") != 1:
+            raise ValueError("Unsupported or missing camera-orientation schema version")
+        try:
+            return cls(
+                direction=_normalized(_vector3(data["direction"], "direction")),
+                view_up=_normalized(_vector3(data["view_up"], "view_up")),
+            )
+        except KeyError as exc:
+            raise ValueError(f"Missing camera-orientation field: {exc.args[0]}") from exc
+
+    @classmethod
+    def from_json(cls, value: str) -> CameraOrientation:
+        try:
+            data = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Could not read camera orientation: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("Camera orientation must contain a JSON object")
+        return cls.from_mapping(data)
+
+
+@dataclass(frozen=True)
 class CameraView:
     """The render-camera values needed to reproduce a viewpoint."""
 

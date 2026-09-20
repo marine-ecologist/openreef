@@ -111,12 +111,16 @@ def read_camera_poses(images_binary: str | Path) -> tuple[CameraPose, ...]:
     return tuple(poses)
 
 
-def save_camera_manifest(poses: tuple[CameraPose, ...], path: str | Path) -> Path:
+def save_camera_manifest(
+    poses: tuple[CameraPose, ...],
+    path: str | Path,
+    coordinate_system: str = "COLMAP world coordinates",
+) -> Path:
     destination = Path(path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": 1,
-        "coordinate_system": "COLMAP world coordinates",
+        "coordinate_system": coordinate_system,
         "registered_cameras": len(poses),
         "cameras": [asdict(pose) for pose in poses],
     }

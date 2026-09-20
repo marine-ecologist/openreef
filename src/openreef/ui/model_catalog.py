@@ -31,6 +31,14 @@ SECTION_ORDER = (
     "Custom saves",
 )
 LEVEL_ORDER = {"High": 0, "Medium": 1, "Low": 2, "Compact": 3}
+VIEWER_RELOAD_ORDER = (
+    "Texture mesh",
+    "Surface mesh",
+    "Dense cloud",
+    "Gaussian splat",
+    "3D tiles",
+    "Custom saves",
+)
 
 
 def discover_model_catalog(layout: DatasetLayout) -> tuple[ModelCatalogSection, ...]:
@@ -58,7 +66,7 @@ def discover_model_catalog(layout: DatasetLayout) -> tuple[ModelCatalogSection, 
             seen[section].add(identity)
             grouped[section].append(ModelCatalogItem(label, path.resolve()))
 
-    sparse = layout.sparse_model()
+    sparse = layout.processing_sparse_model()
     if sparse is not None:
         grouped["Sparse cloud"].insert(0, ModelCatalogItem("Points + cameras", sparse))
 
@@ -74,6 +82,17 @@ def discover_model_catalog(layout: DatasetLayout) -> tuple[ModelCatalogSection, 
             items = [*special, *levels]
         sections.append(ModelCatalogSection(title, tuple(items)))
     return tuple(sections)
+
+
+def preferred_model_path(sections: tuple[ModelCatalogSection, ...]) -> Path | None:
+    """Choose the best native result to show after switching projects."""
+
+    by_title = {section.title: section for section in sections}
+    for title in VIEWER_RELOAD_ORDER:
+        section = by_title.get(title)
+        if section and section.items:
+            return section.items[0].path
+    return None
 
 
 def _classify(path: Path, dataset: str) -> tuple[str, str]:

@@ -6,21 +6,25 @@ OpenReef is an open-source desktop workspace for reconstructing 3D coral and ree
 
 OpenReef adopts the same underlying standardised workflow as [ReefShape](https://github.com/Perry-Institute/ReefShape): standardised acquisition, repeatable reconstruction, explicit quality control, and analysis-ready outputs, but replaces the proprietary Metashape processing dependency with an open-source reconstruction stack. COLMAP performs feature extraction, image matching, camera calibration, and sparse structure-from-motion; OpenMVS then generates dense point clouds, surface meshes, and image-derived textures. An optional OpenSplat/Metal stage trains a Gaussian appearance model from the same registered cameras and undistorted photographs. PyVista/VTK provides local inspection of sparse and dense geometry and camera positions, while the bundled SuperSplat viewer handles full Gaussian appearance rendering.
 
-For repeat monitoring, v1.0 of OpenReef will support fixed or temporary scale bars, coded targets, and stable non-collinear reference markers so that models can be placed in a consistent scale and coordinate frame through time, allowing reconstructions to become a quantitative monitoring product rather than simply a 3D visualisation. The end goal of OpenReef will be to support measurements such as colony dimensions, surface area, volume, structural complexity, and change between surveys.
+OpenReef now supports temporary MarkerTags for metric scale. For repeat monitoring, v1.0
+will extend this with permanent, stable non-collinear site markers so models can also be
+placed in a consistent coordinate frame through time. The end goal is quantitative analysis
+of colony dimensions, surface area, volume, structural complexity, and change between surveys.
 
 
-## Version 0.5
+## Version 0.6.2
 
-See [CHANGELOG.md](CHANGELOG.md) for the recorded 0.2.0–0.5.0 version history.
+See [CHANGELOG.md](CHANGELOG.md) for the recorded 0.2.0–0.6.2 version history.
 
 The desktop workflow is organized as:
 
 ```text
-Input images → Render images [Sparse → Crop → Dense → Texture → Splat] → 3D viewer
+Data → Process [Sparse → MarkerTags → Crop → Dense → Texture → Splat → 3D Tiles] → Viewer
 ```
 
-The simplified three-tab workspace keeps image preparation, reconstruction, and
-inspection distinct. **Render images** automatically marks existing stages as
+The left sidebar keeps Data preparation, Process reconstruction, Viewer inspection,
+and Projects distinct while leaving the central workspace wide. **Process**
+automatically marks existing stages as
 Complete, checks unfinished stages, and lets a completed stage be checked again
 when it needs recomputing. Each workflow group and individual step reports
 Pending, Queued, Running, Complete, or Needs attention while the shared live
@@ -31,8 +35,8 @@ terminal continues to stream detailed output.
 - Preserve untouched photos and extracted frames in `original/`, then build
   the pipeline-ready `images/` folder with or without color correction.
 - Select a dataset and run individual or contiguous pipeline stages.
-- Generate COLMAP features, sequential matches, sparse geometry, and PINHOLE
-  undistorted images.
+- Generate COLMAP features, sequential matches, sparse geometry, automatically
+  detect temporary MarkerTags, solve metric scale, and create PINHOLE undistorted images.
 - Inspect every disconnected COLMAP sparse model together with its registered
   cameras. OpenReef recommends the model registering the most photographs and
   passes the selected numbered model folder into downstream processing.
@@ -49,7 +53,7 @@ terminal continues to stream detailed output.
 - Crop a dense cloud in 3D Viewer and hand it to Surface Mesh without replacing
   the complete cloud. The meshing stage automatically prefers the current
   `scene_dense*_cropped.ply` input.
-- Continue through Texture mesh in the same **Render images** workflow to
+- Continue through Texture mesh in the same **Process** workflow to
   project registered photographs onto every selected output level and export
   portable, self-contained GLBs.
 - Train an optional Gaussian splat from the undistorted COLMAP project using
@@ -83,8 +87,8 @@ terminal continues to stream detailed output.
 - Use solid, wireframe, or solid-with-wireframe mesh display.
 - Adjust point size and inspect basic model statistics.
 - Capture any current viewing angle and export a fitted 2K, 4K, or 8K
-  orthographic PNG with an optional transparent background. This is an
-  unscaled visual orthomosaic, not a georeferenced measurement product.
+  orthographic PNG with an optional transparent background. This is a render-only
+  visual orthomosaic, not a georeferenced measurement product.
 - Trim meshes or point clouds with a camera-aligned freehand lasso: retain the
   circled colony or delete the circled material, then undo, reset, or save a
   new file without overwriting the source model.
@@ -99,10 +103,37 @@ terminal continues to stream detailed output.
   against the source mesh before the selected output complexity is saved.
 - Export screenshots and save or restore JSON camera viewpoints.
 
-OpenReef 0.5 includes OpenMVS surface reconstruction and texturing,
+OpenReef 0.6.2 includes OpenMVS surface reconstruction and texturing,
 sparse-camera QA, a downstream processing ROI, and an initial non-destructive
-lasso-trimming workflow, plus optional OpenSplat training. It does **not** yet
-perform hole filling or mesh repair, alignment, scaling, or scientific analysis.
+lasso-trimming workflow, plus optional OpenSplat training and MarkerTag metric scaling. It
+does **not** yet perform hole filling, mesh repair, permanent-site alignment, or scientific
+analysis.
+
+### MarkerTags: temporary scale markers
+
+MarkerTags are non-permanent AprilTag field markers placed in a survey to give the
+reconstruction metric scale. After sparse reconstruction, OpenReef scans the source images,
+matches detections to registered COLMAP cameras, triangulates each tag's four canonical
+corners and centre across views, and robustly combines the reconstructed edge lengths. The
+default family is `tag36h11` and the known encoded-square edge is `0.050 m` (50 mm).
+
+The tag edge is the only scale reference. The current physical carrier is a 90 mm diameter,
+8 mm high disc with the tag face raised by 0.6 mm; none of those carrier dimensions enters
+the scale solve. A scale is accepted only when a tag is detected across registered images,
+at least two edges reconstruct, and the edge estimates agree within the validation limits.
+Otherwise the workflow continues explicitly unscaled and records the reason.
+
+The complete audit record is written to `models/<dataset>_markertags.json`: family and IDs,
+source images, pixel corners/centres, registered image and camera IDs, reconstructed 3D
+corners/centres where available, observation counts, scale factor, and residual. A validated
+metric copy of the COLMAP model is created under `colmap/metric/sparse/` before undistortion,
+so dense clouds, meshes, textures, tiles, and Gaussian outputs inherit metre coordinates.
+The raw sparse reconstruction under `colmap/sparse/` is retained unchanged.
+
+Command-line configuration uses `--marker-tag-family` and `--marker-tag-size-m`; the desktop
+Render workflow exposes the same family and edge-size settings. Permanent site markers are a
+separate future marker class: unlike temporary MarkerTags, they may later establish a stable
+coordinate frame and cross-survey alignment, not just scale.
 
 ### Setup and run
 
@@ -126,7 +157,7 @@ python -m openreef path/to/dataset
 
 ### Dense and textured mesh workflow
 
-The **Render images** tab presents Sparse cloud, the optional crop checkpoint,
+The **Process** view presents Sparse cloud, the optional crop checkpoint,
 Dense cloud, Texture mesh, and Gaussian splat as one left-to-right workflow.
 Dense Cloud creates the selected point clouds and surface meshes. Texture Mesh
 then uses OpenMVS to project the registered source photographs onto any matching
@@ -219,7 +250,7 @@ later publishing destination rather than the reconstruction engine.
 
 ### Web Export
 
-In **3D viewer**, open or crop a GLB/PLY model, then choose **Export current
+In **Viewer**, open or crop a GLB/PLY model, then choose **Export current
 model…** under OpenReef Web in the right sidebar. OpenReef automatically creates
 or updates `openreef-web/` in the dataset root, beside `models/`, `colmap/`, and
 `openmvs/`. It contains the current model, `index.html`, its viewer files, local
@@ -235,7 +266,7 @@ OpenReef stops without writing an oversized result and asks for a lower-resoluti
 textured mesh. The command-line equivalent adds `--compact` to
 `python -m openreef.web_export`.
 
-After **Gaussian splat** in **Render images**, use the narrow **3D tiles**
+After **Gaussian splat** in **Process**, use the narrow **3D tiles**
 checkpoint and choose the highest-detail textured GLB in `models/`. OpenReef now
 builds the hierarchy itself: Assimp converts the textured mesh, OpenReef divides
 its triangles spatially, reuses the smallest Compact/Low textured GLB as a
@@ -448,7 +479,7 @@ and disabled by default.
 
 Reconstruction outputs retain the shell-pipeline layout:
 `colmap/database.db`, `colmap/sparse`, `colmap/dense`, and
-`openmvs/scene*.mvs`. When OpenMVS writes `scene_dense.ply`, Render images offers
+`openmvs/scene*.mvs`. When OpenMVS writes `scene_dense.ply`, Process offers
 it directly to 3D Viewer.
 
 The RAM control is an optional hard ceiling for the active child process. It is
@@ -488,9 +519,9 @@ For an orthomosaic-style image, rotate the mesh or cloud to the required angle,
 choose **Set current viewing angle**, select the output resolution, then choose
 **Export orthomosaic PNG**. OpenReef temporarily uses orthographic projection,
 fits the complete model, renders meshes as a solid textured surface, and then
-restores the interactive camera. Because version 0.5 has no scale or coordinate
-reference, the PNG is intended for visual comparison and QA rather than mapped
-distance or area measurements.
+restores the interactive camera. MarkerTags can provide metric scale in version
+0.6, but the PNG has no geospatial coordinate reference and remains intended for
+visual comparison and QA rather than mapped distance or area measurements.
 
 
 For development:
@@ -543,8 +574,9 @@ format-neutral `ModelDocument`, keeping rendering independent from reconstructio
 
 ## Roadmap
 
-- **0.5:** Gaussian masking and spatial cleanup, multi-model history, richer
-  material controls, mesh repair, measurement, scale metadata, and annotations.
+- **0.6:** MarkerTag metric scaling, spatial 3D Tiles, and the neutral sidebar
+  workspace design.
+- **Next:** richer material controls, mesh repair, measurement, and annotations.
 - **Later:** alignment, batch/timelapse orchestration, and scientific change
   analysis. Processing will remain separate from the viewer core so OpenReef
   can still be used as a lightweight QA application.
