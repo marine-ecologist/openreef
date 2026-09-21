@@ -6,7 +6,7 @@ project:
   resources:
     - models/annularis/tiles/**
     - models/natans/tiles/**
-    - models/patchreef/scene_mesh_compact_textured.glb
+    - models/patchreef/tiles/**
     - vendor/**
     - viewer.js
     - tiled-viewer.js
