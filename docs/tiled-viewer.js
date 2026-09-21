@@ -1,9 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
-import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { TilesRenderer } from '3d-tiles-renderer';
-import { GLTFExtensionsPlugin } from '3d-tiles-renderer/three/plugins';
 
 const viewer = document.querySelector('[data-tileset]');
 
@@ -12,6 +9,16 @@ if (viewer) {
   const modelTitle = viewer.dataset.title || 'Reef model';
   const modelSource = viewer.dataset.source || 'Spatial 3D tiles';
   const tileCount = Number(viewer.dataset.tiles || 0);
+  const viewDirection = (viewer.dataset.viewDirection || '0.8,-1.2,0.65')
+    .split(',')
+    .map(Number);
+  const viewDistance = Number(viewer.dataset.viewDistance || 1.08);
+  const viewTarget = (viewer.dataset.viewTarget || '0,0,0')
+    .split(',')
+    .map(Number);
+  const viewUp = (viewer.dataset.viewUp || '0,0,1')
+    .split(',')
+    .map(Number);
 
   viewer.innerHTML = `
     <div class="reef-viewport" aria-label="Interactive 3D model of ${modelTitle}"></div>
@@ -45,13 +52,13 @@ if (viewer) {
         </div>
       </div>
     </aside>
-    <div class="reef-progress-wrap" role="progressbar" aria-label="Visible tile transfer" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <div class="reef-progress-wrap" style="left:50%;top:50%;bottom:auto;transform:translate(-50%,-50%)" role="progressbar" aria-label="Visible tile transfer" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
       <div class="progress">
         <div class="reef-progress progress-bar bg-success" style="width: 0%"></div>
       </div>
     </div>
     <div class="reef-help" aria-label="How to move around the model">
-      <span><strong>Rotate</strong> right-drag</span>
+      <span><strong>Rotate</strong> left- or right-drag</span>
       <span><strong>Pan</strong> middle-drag or two fingers</span>
       <span><strong>Zoom</strong> wheel or pinch</span>
     </div>
@@ -69,7 +76,7 @@ if (viewer) {
   scene.fog = new THREE.FogExp2(0x222222, 0.00012);
 
   const camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1_000_000_000);
-  camera.up.set(0, 0, 1);
+  camera.up.set(...viewUp).normalize();
 
   const renderer = new THREE.WebGLRenderer({
     antialias: true,
@@ -86,7 +93,7 @@ if (viewer) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.screenSpacePanning = true;
-  controls.mouseButtons.LEFT = null;
+  controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
   controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
   controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
   renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
@@ -159,12 +166,6 @@ if (viewer) {
   scene.add(sun);
 
   const tiles = new TilesRenderer(tilesetUrl);
-  const dracoLoader = new DRACOLoader();
-  dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
-  const ktx2Loader = new KTX2Loader()
-    .setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/libs/basis/')
-    .detectSupport(renderer);
-  tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader, ktx2Loader }));
   tiles.setCamera(camera);
   tiles.setResolutionFromRenderer(camera, renderer);
   tiles.errorTarget = 8;
@@ -172,6 +173,18 @@ if (viewer) {
 
   let rootReady = false;
   let loadedTiles = 0;
+  let fittedSphere = null;
+
+  const recordView = () => {
+    if (!fittedSphere) return;
+    const offset = camera.position.clone().sub(controls.target);
+    const baseDistance = fittedSphere.radius / Math.sin(THREE.MathUtils.degToRad(camera.fov * 0.5));
+    viewer.dataset.currentViewDirection = offset.normalize().toArray().map(value => value.toFixed(4)).join(',');
+    viewer.dataset.currentViewDistance = (camera.position.distanceTo(controls.target) / baseDistance).toFixed(4);
+    viewer.dataset.currentViewTarget = controls.target.clone().sub(fittedSphere.center)
+      .divideScalar(fittedSphere.radius).toArray().map(value => value.toFixed(4)).join(',');
+  };
+  controls.addEventListener('end', recordView);
 
   const setNavbarHeight = () => {
     const header = document.querySelector('#quarto-header') || document.querySelector('.navbar');
@@ -194,14 +207,19 @@ if (viewer) {
     if (!rootReady || !tiles.getBoundingSphere(sphere) || sphere.radius <= 0) return;
     tiles.group.updateMatrixWorld(true);
     sphere.applyMatrix4(tiles.group.matrixWorld);
-    const direction = new THREE.Vector3(0.8, -1.2, 0.65).normalize();
+    fittedSphere = sphere.clone();
+    const direction = new THREE.Vector3(...viewDirection).normalize();
+    const target = sphere.center.clone().add(
+      new THREE.Vector3(...viewTarget).multiplyScalar(sphere.radius),
+    );
     const distance = sphere.radius / Math.sin(THREE.MathUtils.degToRad(camera.fov * 0.5));
-    camera.position.copy(sphere.center).add(direction.multiplyScalar(distance * 1.08));
+    camera.position.copy(target).add(direction.multiplyScalar(distance * viewDistance));
     camera.near = Math.max(distance / 1000, 0.0001);
     camera.far = Math.max(distance * 1000, 1000);
     camera.updateProjectionMatrix();
-    controls.target.copy(sphere.center);
+    controls.target.copy(target);
     controls.update();
+    recordView();
     scene.fog = new THREE.FogExp2(0x222222, 0.16 / Math.max(sphere.radius, 1));
   };
 

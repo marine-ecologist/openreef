@@ -1,6 +1,6 @@
 {
   "asset": {
-    "version": "1.1",
+    "version": "1.0",
     "generator": "OpenReef 0.5"
   },
   "geometricError": 0.8488819482648833,
@@ -23,6 +23,9 @@
     },
     "geometricError": 0.8488819482648833,
     "refine": "REPLACE",
+    "content": {
+      "uri": "root/coarse-textured.glb"
+    },
     "children": [
       {
         "boundingVolume": {

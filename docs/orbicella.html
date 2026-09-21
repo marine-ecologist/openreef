@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Orbicella annularis – OpenReef</title>
+<title>Orbicella – OpenReef</title>
 <style>
 code{white-space: pre-wrap;}
 span.smallcaps{font-variant: small-caps;}
@@ -57,8 +57,7 @@ ul.task-list li input[type="checkbox"] {
   "imports": {
     "three": "./vendor/three/build/three.module.js",
     "three/addons/": "./vendor/three/examples/jsm/",
-    "3d-tiles-renderer": "https://cdn.jsdelivr.net/npm/3d-tiles-renderer@0.5.0/build/index.js",
-    "3d-tiles-renderer/three/plugins": "https://cdn.jsdelivr.net/npm/3d-tiles-renderer@0.5.0/build/index.three-plugins.js"
+    "3d-tiles-renderer": "./vendor/3d-tiles-renderer/build/index.js"
   }
 }
 </script>
@@ -126,19 +125,15 @@ ul.task-list li input[type="checkbox"] {
 <!-- main -->
 
 <header id="title-block-header">
-<h1 class="title display-7">Orbicella annularis</h1>
+<h1 class="title display-7">Orbicella</h1>
 
 </header>
 
 
-<div class="reef-viewer" data-model="models/patchreef/scene_mesh_compact_textured.glb" data-title="Patch reef" data-source="DJI6Run4GPSCL · compact textured mesh" data-bytes="18746692">
+<div class="reef-viewer" data-tileset="models/annularis/tiles/tileset.json?v=20260921-2" data-title="Orbicella" data-source="Orbicella annularis · full-resolution spatial 3D tiles" data-tiles="646" data-view-direction="-0.1065,0.8298,-0.5478" data-view-distance="0.48" data-view-target="0,0,0" data-view-up="1,0,0">
 
 </div>
-<script type="module" src="viewer.js"></script>
-<div class="reef-viewer" data-tileset="models/annularis/tiles/tileset.json" data-title="Orbicella" data-source="Orbicella annularis · full-resolution spatial 3D tiles" data-tiles="646">
-
-</div>
-<script type="module" src="tiled-viewer.js"></script>
+<script type="module" src="tiled-viewer.js?v=20260921-4"></script>
 
 
 

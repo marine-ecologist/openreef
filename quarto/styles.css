@@ -197,9 +197,15 @@ body:has(.reef-viewer) .page-layout-custom {
 
 .reef-progress-wrap {
   left: 50%;
-  bottom: 1rem;
-  width: min(25rem, calc(100vw - 3rem));
-  transform: translateX(-50%);
+  top: 50%;
+  bottom: auto;
+  width: min(28rem, calc(100vw - 3rem));
+  padding: 0.5rem;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--bs-border-radius);
+  background: rgb(48 48 48 / 92%);
+  box-shadow: var(--bs-box-shadow);
 }
 
 .reef-progress-wrap .progress {
@@ -244,8 +250,9 @@ body:has(.reef-viewer) .page-layout-custom {
   }
 
   .reef-progress-wrap {
-    bottom: 1.25rem;
-    width: 40vw;
+    top: 50%;
+    bottom: auto;
+    width: min(75vw, 22rem);
   }
 }
 
