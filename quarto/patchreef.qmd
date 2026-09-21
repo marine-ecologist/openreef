@@ -4,5 +4,5 @@ title-block-style: none
 page-layout: custom
 ---
 
-<div class="reef-viewer" data-tileset="models/patchreef/tiles/tileset.json?v=20260921-1" data-title="Patch reef" data-source="DJI6Run4GPSCL · full-resolution spatial 3D tiles" data-tiles="838" data-view-direction="0.0467,0.4791,-0.8765" data-view-distance="0.34" data-view-target="0,0,0" data-view-up="0,1,0"></div>
+<div class="reef-viewer" data-tileset="models/patchreef/tiles/tileset.json?v=20260921-1" data-title="Patch reef" data-source="DJI6Run4GPSCL · full-resolution spatial 3D tiles" data-tiles="838" data-view-direction="-0.4347,0.8980,0.0686" data-view-distance="0.7826" data-view-target="0.1343,-0.0017,-0.1030" data-view-up="0.9986,0,0.0532"></div>
 <script type="module" src="tiled-viewer.js?v=20260921-4"></script>
