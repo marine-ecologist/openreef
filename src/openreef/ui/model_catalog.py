@@ -95,6 +95,15 @@ def preferred_model_path(sections: tuple[ModelCatalogSection, ...]) -> Path | No
     return None
 
 
+def textured_mesh_items(
+    sections: tuple[ModelCatalogSection, ...],
+) -> tuple[ModelCatalogItem, ...]:
+    """Return only textured-mesh resolution choices for Flow Field."""
+
+    section = next((item for item in sections if item.title == "Texture mesh"), None)
+    return section.items if section is not None else ()
+
+
 def _classify(path: Path, dataset: str) -> tuple[str, str]:
     escaped = re.escape(dataset)
     stem = path.stem

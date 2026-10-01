@@ -5,6 +5,12 @@ the development-version increments that existed in the working tree.
 
 ## Unreleased
 
+- Added a mesh-only Flow Field workflow beneath Viewer, with a textured-mesh
+  resolution selector, terrain-following particle trails, relative-speed colour,
+  coherent downstream wakes, and a viewport current-direction indicator.
+- Kept flow rendering independent of its mesh-derived velocity source so a future
+  CFD field can replace it without changing the viewer layer.
+
 ## 0.6.2 — 2026-09-21
 
 - Added metric-gated 3D length and mesh-surface polygon tools with persistent

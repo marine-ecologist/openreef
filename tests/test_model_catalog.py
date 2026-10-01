@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from openreef.pipeline.stages import DatasetLayout
-from openreef.ui.model_catalog import discover_model_catalog, preferred_model_path
+from openreef.ui.model_catalog import (
+    discover_model_catalog,
+    preferred_model_path,
+    textured_mesh_items,
+)
 
 
 def test_model_catalog_groups_levels_and_custom_saves(tmp_path: Path) -> None:
@@ -56,3 +60,18 @@ def test_project_reload_prefers_high_textured_result(tmp_path: Path) -> None:
     sections = discover_model_catalog(layout)
 
     assert preferred_model_path(sections) == textured
+
+
+def test_flow_field_offers_only_textured_mesh_resolutions(tmp_path: Path) -> None:
+    layout = DatasetLayout(tmp_path)
+    layout.models.mkdir()
+    medium = layout.models / f"{tmp_path.name}_textured_mesh_medium.glb"
+    compact = layout.models / f"{tmp_path.name}_textured_mesh_compact.glb"
+    medium.touch()
+    compact.touch()
+    (layout.models / f"{tmp_path.name}_mesh_medium.ply").touch()
+
+    items = textured_mesh_items(discover_model_catalog(layout))
+
+    assert [item.label for item in items] == ["Medium", "Compact"]
+    assert [item.path for item in items] == [medium.resolve(), compact.resolve()]

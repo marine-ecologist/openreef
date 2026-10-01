@@ -51,6 +51,7 @@ from openreef.pipeline.stages import (
     sync_model_links,
 )
 from openreef.ui.controls import ViewerControls
+from openreef.ui.flow_field_page import FlowFieldPage
 from openreef.ui.input_images_page import InputImagesPage
 from openreef.ui.measurements import MeasurementController
 from openreef.ui.model_catalog import (
@@ -151,6 +152,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.viewer_stack, 1)
         layout.addWidget(self.controls_scroll)
 
+        self.flow_field_page = FlowFieldPage()
+
         self.projects_page = self._build_projects_page()
         self.markertags_page = self._build_markertags_page()
         self.settings_page = self._build_settings_page()
@@ -158,6 +161,7 @@ class MainWindow(QMainWindow):
             self.render_scroll,
             self.input_scroll,
             self.viewer_page,
+            self.flow_field_page,
             self.projects_page,
             self.markertags_page,
             self.settings_page,
@@ -267,6 +271,7 @@ class MainWindow(QMainWindow):
             ("Images", self.input_scroll),
             ("Process", self.render_scroll),
             ("Viewer", self.viewer_page),
+            ("Flow Field", self.flow_field_page),
         ):
             layout.addWidget(self._sidebar_button(label, page))
 
@@ -479,6 +484,8 @@ class MainWindow(QMainWindow):
             self.scene.set_theme(self._dark_mode)
         if hasattr(self, "points_page"):
             self.points_page.scene.set_theme(self._dark_mode)
+        if hasattr(self, "flow_field_page"):
+            self.flow_field_page.set_theme(self._dark_mode)
 
     def _connect_controls(self) -> None:
         self.controls.fit_requested.connect(self.scene.fit_to_view)
@@ -508,6 +515,7 @@ class MainWindow(QMainWindow):
         self.input_page.dataset_path_changed.connect(self._sync_dataset_root)
         self.input_page.images_ready.connect(self._input_images_ready)
         self.render_page.dataset_path_changed.connect(self._sync_dataset_root)
+        self.flow_field_page.dataset_path_changed.connect(self._sync_dataset_root)
         self.render_page.open_artifact_requested.connect(lambda path: self.load_path(Path(path)))
         self.render_page.crop_requested.connect(self._open_sparse_crop)
         self.render_page.tileset_requested.connect(self._export_tiled_web)
@@ -646,6 +654,7 @@ class MainWindow(QMainWindow):
         self.input_page.set_dataset_root(root)
         self.render_page.set_dataset_root(root)
         self.points_page.set_dataset_root(root)
+        self.flow_field_page.set_dataset_root(root)
         try:
             sync_model_links(DatasetLayout(root))
         except OSError as exc:
@@ -905,6 +914,7 @@ class MainWindow(QMainWindow):
     def _tab_changed(self, index: int) -> None:
         self._sync_navigation()
         self._apply_theme()
+        self.flow_field_page.set_active(self.tabs.widget(index) is self.flow_field_page)
         if (
             self.tabs.widget(index) is self.viewer_page
             and self.viewer_stack.currentWidget() is self.points_page
@@ -1741,6 +1751,7 @@ class MainWindow(QMainWindow):
                 self._tile_process.terminate()
         self.plotter.close()
         self.points_page.plotter.close()
+        self.flow_field_page.shutdown()
         self.splat_page.shutdown()
         self.tileset_page.shutdown()
         self._splat_preview_folder.cleanup()
