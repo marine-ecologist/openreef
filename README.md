@@ -508,8 +508,10 @@ its embedded image texture. GLB keeps the geometry, materials, and texture
 atlases together in one file. Right-drag, Ctrl + left-drag, or Shift +
 two-finger movement orbits. Middle-drag, Shift + right-drag, Ctrl + Shift +
 left-drag, or ordinary two-finger movement pans. Pinch or the mouse wheel zooms,
-and `F` fits the whole model into view. A plain left-click is reserved for
-selection; when a crop tool is active, left-drag draws the selection. Meshes
+and `F` fits the whole model into view. Orbiting keeps the saved Set view
+model-up axis level, prevents camera roll, and stops at the poles instead of
+turning the model upside down. A plain left-click is reserved for selection;
+when a crop tool is active, left-drag draws the selection. Meshes
 open in wireframe mode by default. Mesh trimming and
 complexity controls live in this Viewer rather than a separate editing tab. The
 application menu exposes dataset/model selection, Screenshot, Save Viewpoint,

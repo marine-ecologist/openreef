@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from openreef.core.camera import CameraOrientation
 from openreef.core.flow import (
     FlowField,
     FlowParameters,
@@ -387,11 +388,17 @@ class FlowFieldPage(QWidget):
 
     dataset_path_changed = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        preferred_orientation: CameraOrientation | None = None,
+    ) -> None:
         super().__init__(parent)
         self._dataset_root: Path | None = None
         self._pending_path: Path | None = None
         self._active = False
+        self._preferred_orientation = preferred_orientation
         self._last_tick = time.perf_counter()
 
         outer = QVBoxLayout(self)
@@ -404,6 +411,8 @@ class FlowFieldPage(QWidget):
         viewer_layout.setContentsMargins(0, 0, 0, 0)
         viewer_layout.setSpacing(0)
         self.plotter = ReefInteractor(viewer)
+        if preferred_orientation is not None:
+            self.plotter.set_world_up(preferred_orientation.world_up_axis)
         self.controls = FlowFieldControls(viewer)
         controls_scroll = QScrollArea(viewer)
         controls_scroll.setObjectName("viewerControlsScroll")
@@ -506,6 +515,22 @@ class FlowFieldPage(QWidget):
     def set_theme(self, dark: bool) -> None:
         self.scene.set_theme(dark)
 
+    def set_preferred_orientation(
+        self,
+        orientation: CameraOrientation | None,
+    ) -> None:
+        """Apply the Viewer Set view orientation and rebuild its visible surface."""
+
+        self._preferred_orientation = orientation
+        self.plotter.set_world_up(
+            orientation.world_up_axis if orientation is not None else (0.0, 0.0, 1.0)
+        )
+        selected = self.controls.current_path()
+        if selected is not None:
+            self._pending_path = selected
+        if self._active:
+            self._load_pending()
+
     def shutdown(self) -> None:
         self.timer.stop()
         self.flow.clear()
@@ -526,6 +551,7 @@ class FlowFieldPage(QWidget):
             QApplication.processEvents()
             field = ReefMeshFlowField.from_document(
                 document,
+                surface_sign=self._surface_sign(),
                 parameters=self.flow.parameters,
             )
             self.flow.set_flow_field(field)
@@ -535,7 +561,22 @@ class FlowFieldPage(QWidget):
         self.controls.set_status(
             f"{path.stem} · {document.stats.cells:,} cells · relative units"
         )
+        self._fit_to_preferred_view()
+
+    def _surface_sign(self) -> float:
+        orientation = self._preferred_orientation
+        return orientation.world_up_axis[2] if orientation is not None else 1.0
+
+    def _fit_to_preferred_view(self) -> None:
+        orientation = self._preferred_orientation
+        if orientation is not None:
+            orientation.apply(self.plotter)
         self.scene.fit_to_view()
+        if orientation is not None:
+            self.plotter.camera.Zoom(0.82)
+            self.plotter.reset_camera_clipping_range()
+            self.plotter.render()
+        self.flow.reset()
 
     def _resolution_changed(self, value: str) -> None:
         self._pending_path = Path(value)

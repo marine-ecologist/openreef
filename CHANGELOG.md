@@ -13,6 +13,9 @@ the development-version increments that existed in the working tree.
 - Refined the Flow Field into a thin, smoothly interpolated surface layer with
   fewer and longer fading paths, lane-based inlet seeding, midpoint integration,
   restrained speed colours, and spatially anchored downstream recirculation.
+- Made Viewer and Flow Field orbit around a stable model-up axis without camera
+  roll or pole inversion, and made Flow Field honour Set view when choosing,
+  fitting, and reseeding the visible mesh surface.
 
 ## 0.6.2 — 2026-09-21
 

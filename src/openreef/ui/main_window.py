@@ -132,6 +132,8 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         self.plotter = ReefInteractor(self.viewer_page)
+        if self._orthographic_orientation is not None:
+            self.plotter.set_world_up(self._orthographic_orientation.world_up_axis)
         self.controls = ViewerControls(self.viewer_page)
         self.controls_scroll = QScrollArea(self.viewer_page)
         self.controls_scroll.setObjectName("viewerControlsScroll")
@@ -152,7 +154,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.viewer_stack, 1)
         layout.addWidget(self.controls_scroll)
 
-        self.flow_field_page = FlowFieldPage()
+        self.flow_field_page = FlowFieldPage(
+            preferred_orientation=self._orthographic_orientation,
+        )
 
         self.projects_page = self._build_projects_page()
         self.markertags_page = self._build_markertags_page()
@@ -570,7 +574,9 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not set view", str(exc))
             return
         self._orthographic_orientation = orientation
+        self.plotter.set_world_up(orientation.world_up_axis)
         QSettings().setValue("viewer/orthographic_orientation", orientation.to_json())
+        self.flow_field_page.set_preferred_orientation(orientation)
         self.controls.set_preferred_view_ready(True)
         self.statusBar().showMessage(
             "View saved — future orthographic views will use this orientation"

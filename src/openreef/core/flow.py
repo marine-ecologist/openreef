@@ -116,6 +116,7 @@ class ReefMeshFlowField:
         document: ModelDocument,
         *,
         resolution: int = 160,
+        surface_sign: float = 1.0,
         parameters: FlowParameters | None = None,
     ) -> ReefMeshFlowField:
         """Build an accelerated height/normal cache from all mesh parts."""
@@ -140,10 +141,9 @@ class ReefMeshFlowField:
             inplace=False,
         )
         cell_normals = np.asarray(mesh.cell_data["Normals"], dtype=np.float64)
-        # OpenReef's viewer treats +Z as up. Triangle winding is not reliable
-        # after GLB export, so always take the highest vertical intersection and
-        # orient its normal upward rather than inferring the surface from winding.
-        top_sign = 1.0
+        # Triangle winding is not reliable after GLB export. Use the side chosen
+        # by the saved view, falling back to OpenReef's conventional +Z top.
+        top_sign = -1.0 if surface_sign < 0 else 1.0
 
         xmin, xmax, ymin, ymax, zmin, zmax = (float(value) for value in mesh.bounds)
         margin = max(zmax - zmin, xmax - xmin, ymax - ymin, 1.0) * 0.05
@@ -180,7 +180,7 @@ class ReefMeshFlowField:
                         for index in range(intersections.GetNumberOfPoints())
                     ]
                 )
-                chosen = int(np.argmax(points[:, 2]))
+                chosen = int(np.argmin(points[:, 2]) if top_sign < 0 else np.argmax(points[:, 2]))
                 cell_id = int(cell_ids.GetId(chosen))
                 normal = cell_normals[cell_id].copy()
                 if normal[2] * top_sign < 0:

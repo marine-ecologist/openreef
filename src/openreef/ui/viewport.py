@@ -22,7 +22,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 from pyvistaqt import QtInteractor
 
-from openreef.core.camera import pan_camera
+from openreef.core.camera import orbit_camera, pan_camera
 from openreef.ui.theme import WARNING_ACCENT
 
 ORBIT_MOTION_FACTOR = 4.0
@@ -30,6 +30,7 @@ TRACKPAD_PAN_FACTOR = 0.35
 PINCH_SENSITIVITY = 1.40
 WHEEL_ZOOM_STEP = 1.08
 TRACKPAD_ORBIT_DEGREES_PER_PIXEL = 0.08
+MOUSE_ORBIT_DEGREES_PER_PIXEL = 0.32
 
 
 def tinkercad_navigation_button(
@@ -206,6 +207,9 @@ class ReefInteractor(QtInteractor):
         if hasattr(style, "SetMotionFactor"):
             style.SetMotionFactor(ORBIT_MOTION_FACTOR)
         self._navigation_press_active = False
+        self._orbit_drag_active = False
+        self._orbit_last_position = (0.0, 0.0)
+        self._world_up = (0.0, 0.0, 1.0)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents)
         self.lasso_overlay = LassoOverlay(self)
         self.lasso_overlay.finished.connect(self.lasso_finished)
@@ -214,6 +218,14 @@ class ReefInteractor(QtInteractor):
         self.measurement_toolbar.tool_selected.connect(self.measurement_tool_selected)
         self.measurement_toolbar.clear_requested.connect(self.measurement_clear_requested)
         self._measurement_mode: str | None = None
+
+    def set_world_up(self, axis: tuple[float, float, float]) -> None:
+        """Set the model-up axis used to keep orbiting level and roll-free."""
+
+        length = math.sqrt(sum(component * component for component in axis))
+        if length <= 1e-12:
+            raise ValueError("World-up axis must not be zero")
+        self._world_up = tuple(component / length for component in axis)
 
     def begin_lasso(self) -> None:
         self.set_measurement_mode(None)
@@ -307,11 +319,40 @@ class ReefInteractor(QtInteractor):
         target = tinkercad_navigation_button(event.button(), event.modifiers())
         if target is None:
             self._navigation_press_active = False
+            self._orbit_drag_active = False
             event.accept()
             return
+        if target == Qt.MouseButton.LeftButton:
+            self._navigation_press_active = False
+            self._orbit_drag_active = True
+            self._orbit_last_position = (
+                float(event.position().x()),
+                float(event.position().y()),
+            )
+            event.accept()
+            return
+        self._orbit_drag_active = False
         self._navigation_press_active = True
         super().mousePressEvent(self._as_navigation_event(event, target))
         event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API name
+        if self._orbit_drag_active:
+            position = (float(event.position().x()), float(event.position().y()))
+            dx = position[0] - self._orbit_last_position[0]
+            dy = position[1] - self._orbit_last_position[1]
+            self._orbit_last_position = position
+            orbit_camera(
+                self.camera,
+                yaw_degrees=-dx * MOUSE_ORBIT_DEGREES_PER_PIXEL,
+                pitch_degrees=dy * MOUSE_ORBIT_DEGREES_PER_PIXEL,
+                world_up=self._world_up,
+            )
+            self.reset_camera_clipping_range()
+            self.render()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API name
         if self._measurement_mode == "polygon" and event.button() == Qt.MouseButton.LeftButton:
@@ -337,6 +378,10 @@ class ReefInteractor(QtInteractor):
         super().keyPressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API name
+        if self._orbit_drag_active:
+            self._orbit_drag_active = False
+            event.accept()
+            return
         if self._navigation_press_active:
             super().mouseReleaseEvent(event)
             self._navigation_press_active = False
@@ -370,9 +415,12 @@ class ReefInteractor(QtInteractor):
             dy = float(pixel_delta.y())
 
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-            self.camera.Azimuth(-dx * TRACKPAD_ORBIT_DEGREES_PER_PIXEL)
-            self.camera.Elevation(dy * TRACKPAD_ORBIT_DEGREES_PER_PIXEL)
-            self.camera.OrthogonalizeViewUp()
+            orbit_camera(
+                self.camera,
+                yaw_degrees=-dx * TRACKPAD_ORBIT_DEGREES_PER_PIXEL,
+                pitch_degrees=dy * TRACKPAD_ORBIT_DEGREES_PER_PIXEL,
+                world_up=self._world_up,
+            )
             self.reset_camera_clipping_range()
             self.render()
             event.accept()

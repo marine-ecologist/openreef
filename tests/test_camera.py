@@ -5,6 +5,7 @@ import pytest
 from openreef.core.camera import (
     CameraOrientation,
     CameraView,
+    orbit_camera,
     orthomosaic_image_size,
     pan_camera,
 )
@@ -77,6 +78,15 @@ def test_camera_orientation_json_round_trip() -> None:
     assert CameraOrientation.from_json(orientation.to_json()) == orientation
 
 
+def test_camera_orientation_preserves_an_inverted_model_up_axis() -> None:
+    orientation = CameraOrientation(
+        direction=(1.0, 0.0, 0.0),
+        view_up=(0.0, 0.2, -0.98),
+    )
+
+    assert orientation.world_up_axis == (0.0, 0.0, -1.0)
+
+
 def test_camera_orientation_reuses_direction_without_reusing_model_position() -> None:
     plotter = FakePlotter()
     orientation = CameraOrientation.capture(plotter)
@@ -100,6 +110,44 @@ def test_screen_pan_moves_camera_and_focal_point_together() -> None:
     assert tuple(camera.position[i] - camera.focal_point[i] for i in range(3)) == pytest.approx(
         (0.0, 0.0, 10.0)
     )
+
+
+def test_orbit_camera_keeps_world_up_and_target() -> None:
+    camera = FakeCamera()
+    camera.position = (10.0, 0.0, 0.0)
+    camera.up = (0.0, -1.0, 0.0)
+
+    orbit_camera(camera, yaw_degrees=90.0, pitch_degrees=30.0)
+
+    assert camera.focal_point == (0.0, 0.0, 0.0)
+    assert camera.position == pytest.approx((0.0, 8.660254, 5.0))
+    assert camera.up == (0.0, 0.0, 1.0)
+
+
+def test_orbit_camera_cannot_cross_a_pole_and_invert() -> None:
+    camera = FakeCamera()
+    camera.position = (10.0, 0.0, 0.0)
+
+    orbit_camera(camera, yaw_degrees=0.0, pitch_degrees=200.0)
+
+    assert camera.position[2] > 0.0
+    assert camera.position[0] > 0.0
+    assert camera.up == (0.0, 0.0, 1.0)
+
+
+def test_orbit_camera_honours_an_inverted_model_up_axis() -> None:
+    camera = FakeCamera()
+    camera.position = (10.0, 0.0, 0.0)
+
+    orbit_camera(
+        camera,
+        yaw_degrees=0.0,
+        pitch_degrees=30.0,
+        world_up=(0.0, 0.0, -1.0),
+    )
+
+    assert camera.position == pytest.approx((8.660254, 0.0, -5.0))
+    assert camera.up == (0.0, 0.0, -1.0)
 
 
 @pytest.mark.parametrize(

@@ -50,6 +50,70 @@ def pan_camera(camera: Any, dx: float, dy: float, viewport_height: int) -> None:
     camera.focal_point = tuple(focal_point[i] + offset[i] for i in range(3))
 
 
+def orbit_camera(
+    camera: Any,
+    yaw_degrees: float,
+    pitch_degrees: float,
+    *,
+    world_up: tuple[float, float, float] = (0.0, 0.0, 1.0),
+    maximum_pitch: float = 89.0,
+) -> None:
+    """Orbit around the target while locking roll to a stable world-up axis."""
+
+    position = _vector3(camera.position, "position")
+    focal_point = _vector3(camera.focal_point, "focal_point")
+    offset = tuple(position[index] - focal_point[index] for index in range(3))
+    distance = math.sqrt(sum(component * component for component in offset))
+    if distance <= 1e-12:
+        return
+    up = _normalized(world_up)
+    normal = tuple(component / distance for component in offset)
+    elevation = math.asin(
+        max(-1.0, min(1.0, sum(normal[index] * up[index] for index in range(3))))
+    )
+    pitch_limit = math.radians(max(1.0, min(abs(maximum_pitch), 89.9)))
+    elevation = max(
+        -pitch_limit,
+        min(pitch_limit, elevation + math.radians(pitch_degrees)),
+    )
+    vertical = sum(offset[index] * up[index] for index in range(3))
+    horizontal_vector = tuple(offset[index] - vertical * up[index] for index in range(3))
+    try:
+        horizontal_direction = _normalized(horizontal_vector)
+    except ValueError:
+        reference = (1.0, 0.0, 0.0) if abs(up[0]) < 0.9 else (0.0, 1.0, 0.0)
+        horizontal_direction = _normalized(
+            (
+                up[1] * reference[2] - up[2] * reference[1],
+                up[2] * reference[0] - up[0] * reference[2],
+                up[0] * reference[1] - up[1] * reference[0],
+            )
+        )
+    yaw = math.radians(yaw_degrees)
+    cross = (
+        up[1] * horizontal_direction[2] - up[2] * horizontal_direction[1],
+        up[2] * horizontal_direction[0] - up[0] * horizontal_direction[2],
+        up[0] * horizontal_direction[1] - up[1] * horizontal_direction[0],
+    )
+    yaw_direction = tuple(
+        horizontal_direction[index] * math.cos(yaw) + cross[index] * math.sin(yaw)
+        for index in range(3)
+    )
+    new_offset = tuple(
+        distance
+        * (
+            math.cos(elevation) * yaw_direction[index]
+            + math.sin(elevation) * up[index]
+        )
+        for index in range(3)
+    )
+    camera.position = tuple(focal_point[index] + new_offset[index] for index in range(3))
+    camera.focal_point = focal_point
+    camera.up = up
+    if hasattr(camera, "OrthogonalizeViewUp"):
+        camera.OrthogonalizeViewUp()
+
+
 def orthomosaic_image_size(
     longest_edge: int,
     viewport_width: int,
@@ -88,6 +152,12 @@ class CameraOrientation:
 
     direction: tuple[float, float, float]
     view_up: tuple[float, float, float]
+
+    @property
+    def world_up_axis(self) -> tuple[float, float, float]:
+        """Return the stable Z-axis sign implied by the captured upright view."""
+
+        return (0.0, 0.0, -1.0 if self.view_up[2] < 0.0 else 1.0)
 
     @classmethod
     def capture(cls, plotter: Any) -> CameraOrientation:
