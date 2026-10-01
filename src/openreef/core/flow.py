@@ -91,8 +91,10 @@ class ReefMeshFlowField:
         self.x_span = max(self.x_max - self.x_min, 1e-9)
         self.y_span = max(self.y_max - self.y_min, 1e-9)
         self.domain_scale = max(self.x_span, self.y_span)
-        self.clearance_min = self.domain_scale * 0.008
-        self.clearance_max = self.domain_scale * 0.12
+        # A thin near-surface sheet reads as flow; a deep random volume reads as
+        # particle noise and hides the reconstruction.
+        self.clearance_min = self.domain_scale * 0.0035
+        self.clearance_max = self.domain_scale * 0.032
 
         finite = self.heights[self.valid]
         low = float(np.min(finite))
@@ -113,7 +115,7 @@ class ReefMeshFlowField:
         cls,
         document: ModelDocument,
         *,
-        resolution: int = 112,
+        resolution: int = 160,
         parameters: FlowParameters | None = None,
     ) -> ReefMeshFlowField:
         """Build an accelerated height/normal cache from all mesh parts."""
@@ -138,8 +140,10 @@ class ReefMeshFlowField:
             inplace=False,
         )
         cell_normals = np.asarray(mesh.cell_data["Normals"], dtype=np.float64)
-        mean_z = float(np.nanmean(cell_normals[:, 2])) if cell_normals.size else -1.0
-        top_sign = -1.0 if mean_z <= 0 else 1.0
+        # OpenReef's viewer treats +Z as up. Triangle winding is not reliable
+        # after GLB export, so always take the highest vertical intersection and
+        # orient its normal upward rather than inferring the surface from winding.
+        top_sign = 1.0
 
         xmin, xmax, ymin, ymax, zmin, zmax = (float(value) for value in mesh.bounds)
         margin = max(zmax - zmin, xmax - xmin, ymax - ymin, 1.0) * 0.05
@@ -176,7 +180,7 @@ class ReefMeshFlowField:
                         for index in range(intersections.GetNumberOfPoints())
                     ]
                 )
-                chosen = int(np.argmin(points[:, 2]) if top_sign < 0 else np.argmax(points[:, 2]))
+                chosen = int(np.argmax(points[:, 2]))
                 cell_id = int(cell_ids.GetId(chosen))
                 normal = cell_normals[cell_id].copy()
                 if normal[2] * top_sign < 0:
@@ -210,28 +214,67 @@ class ReefMeshFlowField:
         return np.array((math.sin(radians), -math.cos(radians), 0.0))
 
     def surface_at(self, x: np.ndarray, y: np.ndarray) -> SurfaceSamples:
-        """Nearest-grid terrain lookup for arrays of horizontal positions."""
+        """Bilinearly interpolate terrain height and normals at horizontal positions."""
 
         x_array = np.asarray(x, dtype=np.float64)
         y_array = np.asarray(y, dtype=np.float64)
-        column = np.rint(
-            (x_array - self.x_min) / self.x_span * (len(self.x_values) - 1)
-        ).astype(int)
-        row = np.rint((y_array - self.y_min) / self.y_span * (len(self.y_values) - 1)).astype(int)
+        grid_x = (x_array - self.x_min) / self.x_span * (len(self.x_values) - 1)
+        grid_y = (y_array - self.y_min) / self.y_span * (len(self.y_values) - 1)
         inside = (
-            (column >= 0)
-            & (column < len(self.x_values))
-            & (row >= 0)
-            & (row < len(self.y_values))
+            (grid_x >= 0.0)
+            & (grid_x <= len(self.x_values) - 1)
+            & (grid_y >= 0.0)
+            & (grid_y <= len(self.y_values) - 1)
         )
-        safe_column = np.clip(column, 0, len(self.x_values) - 1)
-        safe_row = np.clip(row, 0, len(self.y_values) - 1)
-        terrain_valid = inside & self.valid[safe_row, safe_column]
+        x0 = np.clip(np.floor(grid_x).astype(int), 0, len(self.x_values) - 1)
+        y0 = np.clip(np.floor(grid_y).astype(int), 0, len(self.y_values) - 1)
+        x1 = np.minimum(x0 + 1, len(self.x_values) - 1)
+        y1 = np.minimum(y0 + 1, len(self.y_values) - 1)
+        fraction_x = np.clip(grid_x - x0, 0.0, 1.0)
+        fraction_y = np.clip(grid_y - y0, 0.0, 1.0)
+        weights = np.stack(
+            (
+                (1.0 - fraction_x) * (1.0 - fraction_y),
+                fraction_x * (1.0 - fraction_y),
+                (1.0 - fraction_x) * fraction_y,
+                fraction_x * fraction_y,
+            ),
+            axis=1,
+        )
+        rows = (y0, y0, y1, y1)
+        columns = (x0, x1, x0, x1)
+        valid_corners = np.stack(
+            [self.valid[row, column] for row, column in zip(rows, columns, strict=True)],
+            axis=1,
+        )
+        usable_weights = weights * valid_corners
+        weight_sum = np.sum(usable_weights, axis=1)
+        safe_weight_sum = np.maximum(weight_sum, 1e-12)
+
+        height_corners = np.stack(
+            [self.heights[row, column] for row, column in zip(rows, columns, strict=True)],
+            axis=1,
+        )
+        relief_corners = np.stack(
+            [self.relief_grid[row, column] for row, column in zip(rows, columns, strict=True)],
+            axis=1,
+        )
+        normal_corners = np.stack(
+            [self.normals[row, column] for row, column in zip(rows, columns, strict=True)],
+            axis=1,
+        )
+        heights = np.sum(height_corners * usable_weights, axis=1) / safe_weight_sum
+        relief = np.sum(relief_corners * usable_weights, axis=1) / safe_weight_sum
+        normals = np.sum(normal_corners * usable_weights[:, :, None], axis=1)
+        normal_length = np.linalg.norm(normals, axis=1)
+        good_normal = normal_length > 1e-12
+        normals[good_normal] /= normal_length[good_normal, None]
+        normals[~good_normal] = (0.0, 0.0, self.top_sign)
         return SurfaceSamples(
-            self.heights[safe_row, safe_column],
-            self.normals[safe_row, safe_column],
-            self.relief_grid[safe_row, safe_column],
-            terrain_valid,
+            heights,
+            normals,
+            relief,
+            inside & (weight_sum > 1e-9),
         )
 
     def sample(self, positions: np.ndarray, elapsed: float) -> tuple[np.ndarray, np.ndarray]:
@@ -256,22 +299,30 @@ class ReefMeshFlowField:
         velocity[valid] = velocity[valid] * (1.0 - following) + tangent[valid] * following
         velocity[valid] *= (1.0 + surface.relief[valid] * 0.42)[:, None]
 
-        look_ahead = self.domain_scale * 0.025
-        ahead = self.surface_at(
-            positions[:, 0] + base_direction[0] * look_ahead,
-            positions[:, 1] + base_direction[1] * look_ahead,
-        )
-        wake_valid = valid & ahead.valid
-        descent = np.zeros(count, dtype=np.float64)
-        descent[wake_valid] = np.maximum(
-            0.0,
-            (ahead.height[wake_valid] - surface.height[wake_valid])
-            * -self.top_sign
-            / look_ahead,
-        )
-        wake = np.clip(descent * self.domain_scale * 1.35, 0.0, 1.0)
+        # Look upstream at several distances. A higher upstream surface produces
+        # a spatially anchored wake that persists behind relief instead of
+        # adding noise everywhere in the field.
+        wake = np.zeros(count, dtype=np.float64)
+        for distance_scale, decay in ((0.028, 1.0), (0.060, 0.82), (0.105, 0.58)):
+            distance = self.domain_scale * distance_scale
+            upstream = self.surface_at(
+                positions[:, 0] - base_direction[0] * distance,
+                positions[:, 1] - base_direction[1] * distance,
+            )
+            wake_valid = valid & upstream.valid
+            relief_above = np.zeros(count, dtype=np.float64)
+            relief_above[wake_valid] = np.maximum(
+                0.0,
+                (upstream.height[wake_valid] - surface.height[wake_valid])
+                * self.top_sign
+                / distance,
+            )
+            wake = np.maximum(
+                wake,
+                np.clip(relief_above * self.domain_scale * 1.15 * decay, 0.0, 1.0),
+            )
         wake *= max(0.0, min(1.0, self.parameters.wake_strength))
-        velocity *= (1.0 - wake * 0.58)[:, None]
+        velocity *= (1.0 - wake * 0.68)[:, None]
 
         wavelength = self.domain_scale * 0.12
         along = positions[:, 0] * base_direction[0] + positions[:, 1] * base_direction[1]
@@ -281,13 +332,15 @@ class ReefMeshFlowField:
             + cross / wavelength * math.pi
             - elapsed * (1.2 + self.parameters.speed * 1.8)
         )
-        vortex = np.sin(phase) * reference * wake * 0.52
+        vortex = np.sin(phase) * reference * wake * 0.62
         velocity[:, 0] += -base_direction[1] * vortex
         velocity[:, 1] += base_direction[0] * vortex
-        velocity[:, 2] += np.cos(phase * 0.5) * reference * wake * 0.09 * self.top_sign
+        recirculation = np.clip((wake - 0.62) / 0.38, 0.0, 1.0) * reference * 0.42
+        velocity[:, :2] -= base_direction[:2] * recirculation[:, None]
+        velocity[:, 2] += np.cos(phase * 0.5) * reference * wake * 0.06 * self.top_sign
 
         clearance = (positions[:, 2] - surface.height) * self.top_sign
-        desired = self.clearance_min * 2.5
+        desired = self.clearance_min * 2.2
         velocity[valid, 2] += (
             (desired - clearance[valid])
             * self.top_sign
@@ -319,7 +372,17 @@ class ReefMeshFlowField:
         if upstream:
             threshold = np.quantile(projection, 0.12)
             candidates = candidates[projection <= threshold]
-        chosen = rng.choice(candidates, size=count, replace=True)
+            cross = -valid_x[candidates] * direction[1] + valid_y[candidates] * direction[0]
+            candidates = candidates[np.argsort(cross)]
+            lane_count = min(96, max(16, int(math.sqrt(count) * 1.6)))
+            lanes = np.arange(count) % lane_count
+            lane_fraction = (lanes + 0.5) / lane_count
+            centres = np.rint(lane_fraction * (len(candidates) - 1)).astype(int)
+            lane_width = max(1, len(candidates) // lane_count)
+            jitter = rng.integers(-lane_width // 3, lane_width // 3 + 1, count)
+            chosen = candidates[np.clip(centres + jitter, 0, len(candidates) - 1)]
+        else:
+            chosen = rng.choice(candidates, size=count, replace=True)
         rows = self._valid_y[chosen]
         columns = self._valid_x[chosen]
         dx = self.x_span / max(len(self.x_values) - 1, 1)
@@ -339,8 +402,8 @@ class FlowParticles:
         field: FlowField,
         count: int,
         *,
-        trail_segments: int = 10,
-        trail_length: float = 1.25,
+        trail_segments: int = 32,
+        trail_length: float = 5.0,
     ) -> None:
         self.field = field
         self.count = int(count)
@@ -349,7 +412,7 @@ class FlowParticles:
         self.rng = np.random.default_rng(0x2F6E2B1)
         self.positions = self.field.seed(self.count, self.rng, upstream=False)
         self.ages = self.rng.uniform(0.0, 5.0, self.count)
-        self.lifetimes = self.rng.uniform(4.0, 9.0, self.count)
+        self.lifetimes = self.rng.uniform(8.0, 14.0, self.count)
         self.relative_speed = np.ones(self.count, dtype=np.float64)
         self.history = np.repeat(
             self.positions[None, :, :], self.trail_segments + 1, axis=0
@@ -362,7 +425,7 @@ class FlowParticles:
         self.rng = np.random.default_rng(0x2F6E2B1)
         self.positions = self.field.seed(self.count, self.rng, upstream=False)
         self.ages = self.rng.uniform(0.0, 5.0, self.count)
-        self.lifetimes = self.rng.uniform(4.0, 9.0, self.count)
+        self.lifetimes = self.rng.uniform(8.0, 14.0, self.count)
         self.relative_speed.fill(1.0)
         self.history[:] = self.positions[None, :, :]
         self.speed_history.fill(1.0)
@@ -371,7 +434,9 @@ class FlowParticles:
 
     def update(self, delta: float, elapsed: float) -> None:
         delta = min(max(float(delta), 0.0), 0.05)
-        velocity, self.relative_speed = self.field.sample(self.positions, elapsed)
+        velocity, _ = self.field.sample(self.positions, elapsed)
+        midpoint = self.positions + velocity * (delta * 0.5)
+        velocity, self.relative_speed = self.field.sample(midpoint, elapsed + delta * 0.5)
         self.positions += velocity * delta
         self.ages += delta
         in_domain = self.field.constrain(self.positions)
@@ -380,7 +445,7 @@ class FlowParticles:
             replacement = self.field.seed(int(expired.sum()), self.rng, upstream=True)
             self.positions[expired] = replacement
             self.ages[expired] = 0.0
-            self.lifetimes[expired] = self.rng.uniform(4.0, 9.0, int(expired.sum()))
+            self.lifetimes[expired] = self.rng.uniform(8.0, 14.0, int(expired.sum()))
             self.history[:, expired, :] = replacement[None, :, :]
             self.speed_history[:, expired] = 1.0
 
@@ -415,3 +480,38 @@ def trail_lines(particle_count: int, trail_segments: int) -> np.ndarray:
     starts = np.arange(particle_count, dtype=np.int64) * width
     indices = starts[:, None] + np.arange(width, dtype=np.int64)[None, :]
     return np.column_stack((np.full(particle_count, width), indices)).reshape(-1)
+
+
+def trail_rgba(
+    relative_speed: np.ndarray,
+    particle_count: int,
+    trail_segments: int,
+) -> np.ndarray:
+    """Map speed and trail age to a restrained CFD-style RGBA palette."""
+
+    width = trail_segments + 1
+    speeds = np.asarray(relative_speed, dtype=np.float64)
+    if speeds.size != particle_count * width:
+        raise ValueError("Trail speed array does not match particle connectivity")
+    palette = np.array(
+        (
+            (24, 46, 184),
+            (0, 139, 235),
+            (0, 218, 196),
+            (141, 226, 70),
+            (247, 213, 41),
+            (245, 91, 32),
+        ),
+        dtype=np.float64,
+    )
+    scaled = np.clip((speeds - 0.42) / 1.80, 0.0, 1.0) * (len(palette) - 1)
+    lower = np.floor(scaled).astype(int)
+    upper = np.minimum(lower + 1, len(palette) - 1)
+    fraction = (scaled - lower)[:, None]
+    rgb = palette[lower] * (1.0 - fraction) + palette[upper] * fraction
+    age = np.linspace(0.0, 1.0, width)
+    alpha = np.rint(20.0 + 220.0 * age**1.45).astype(np.uint8)
+    rgba = np.empty((speeds.size, 4), dtype=np.uint8)
+    rgba[:, :3] = np.rint(rgb).astype(np.uint8)
+    rgba[:, 3] = np.tile(alpha, particle_count)
+    return rgba

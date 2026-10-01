@@ -31,6 +31,7 @@ from openreef.core.flow import (
     FlowParticles,
     ReefMeshFlowField,
     trail_lines,
+    trail_rgba,
 )
 from openreef.core.scene import DISPLAY_MODES, SceneController
 from openreef.io.model_loader import ModelLoadError, load_model
@@ -139,9 +140,9 @@ class FlowFieldControls(QWidget):
         flow_form.addRow("Relative speed", self._slider_row(self.speed, self.speed_value))
 
         self.density = QComboBox()
-        self.density.addItem("Low · 4k", 4_000)
-        self.density.addItem("Medium · 10k", 10_000)
-        self.density.addItem("High · 18k", 18_000)
+        self.density.addItem("Low · 750", 750)
+        self.density.addItem("Medium · 1.5k", 1_500)
+        self.density.addItem("High · 3k", 3_000)
         self.density.setCurrentIndex(1)
         self.density.currentIndexChanged.connect(
             lambda: self.density_changed.emit(int(self.density.currentData()))
@@ -149,9 +150,9 @@ class FlowFieldControls(QWidget):
         flow_form.addRow("Particle density", self.density)
 
         self.trail_length = QSlider(Qt.Orientation.Horizontal)
-        self.trail_length.setRange(5, 25)
-        self.trail_length.setValue(13)
-        self.trail_value = QLabel("1.3 s")
+        self.trail_length.setRange(25, 70)
+        self.trail_length.setValue(50)
+        self.trail_value = QLabel("5.0 s")
         self.trail_length.valueChanged.connect(self._trail_changed)
         flow_form.addRow("Trail length", self._slider_row(self.trail_length, self.trail_value))
 
@@ -266,8 +267,8 @@ class FlowOverlayController:
         self.particles: FlowParticles | None = None
         self.polydata: pv.PolyData | None = None
         self.enabled = True
-        self.particle_count = 10_000
-        self.trail_length = 1.3
+        self.particle_count = 1_500
+        self.trail_length = 5.0
         self.elapsed = 0.0
 
     def set_flow_field(self, field: FlowField) -> None:
@@ -289,7 +290,11 @@ class FlowOverlayController:
         self.particles.update(delta, self.elapsed)
         points, speeds = self.particles.ordered_trails()
         self.polydata.points = points
-        self.polydata.point_data["Relative speed"] = speeds
+        self.polydata.point_data["Flow colour"] = trail_rgba(
+            speeds,
+            self.particle_count,
+            self.particles.trail_segments,
+        )
         self.polydata.Modified()
         self.plotter.render()
 
@@ -344,15 +349,18 @@ class FlowOverlayController:
             points,
             lines=trail_lines(self.particle_count, self.particles.trail_segments),
         )
-        self.polydata.point_data["Relative speed"] = speeds
+        self.polydata.point_data["Flow colour"] = trail_rgba(
+            speeds,
+            self.particle_count,
+            self.particles.trail_segments,
+        )
         self.plotter.add_mesh(
             self.polydata,
             name="flow-trails",
-            scalars="Relative speed",
-            cmap=["#0d6ff2", "#00f2c7", "#ffd138"],
-            clim=(0.0, 2.0),
-            line_width=1.0,
-            opacity=0.82,
+            scalars="Flow colour",
+            rgba=True,
+            line_width=1.2,
+            opacity=1.0,
             lighting=False,
             render_lines_as_tubes=False,
             show_scalar_bar=False,
@@ -543,6 +551,11 @@ class FlowFieldPage(QWidget):
 
     def _path_edited(self) -> None:
         value = self.dataset_path.text().strip()
+        if (
+            self._dataset_root is not None
+            and Path(value).expanduser().resolve() == self._dataset_root
+        ):
+            return
         self.set_dataset_root(value)
         self.dataset_path_changed.emit(value)
 

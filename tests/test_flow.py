@@ -1,6 +1,12 @@
 import numpy as np
 
-from openreef.core.flow import FlowParameters, FlowParticles, ReefMeshFlowField, trail_lines
+from openreef.core.flow import (
+    FlowParameters,
+    FlowParticles,
+    ReefMeshFlowField,
+    trail_lines,
+    trail_rgba,
+)
 
 
 def _ridge_field(direction: float = 90.0) -> ReefMeshFlowField:
@@ -28,8 +34,8 @@ def test_flow_reversal_moves_wake_to_opposite_side() -> None:
     field.parameters.direction = 270.0
     reverse, _ = field.sample(positions, elapsed=0.4)
 
-    assert forward[0, 0] > 0
-    assert reverse[1, 0] < 0
+    assert forward[1, 0] > 0
+    assert reverse[0, 0] < 0
     assert abs(forward[0, 0]) < abs(forward[1, 0])
     assert abs(reverse[1, 0]) < abs(reverse[0, 0])
 
@@ -49,3 +55,33 @@ def test_particles_stay_above_surface_and_produce_trails() -> None:
     assert points.shape == (24 * 6, 3)
     assert speeds.shape == (24 * 6,)
     assert trail_lines(24, 5).shape == (24 * 7,)
+
+
+def test_surface_sampling_interpolates_between_grid_cells() -> None:
+    axis = np.array((0.0, 1.0))
+    heights = np.array(((0.0, 1.0), (2.0, 3.0)))
+    normals = np.zeros((2, 2, 3))
+    normals[..., 2] = 1.0
+    field = ReefMeshFlowField(
+        axis,
+        axis,
+        heights,
+        normals,
+        np.ones_like(heights, dtype=bool),
+        top_sign=1,
+    )
+
+    sample = field.surface_at(np.array((0.5,)), np.array((0.5,)))
+
+    assert np.isclose(sample.height[0], 1.5)
+    assert np.allclose(sample.normals[0], (0.0, 0.0, 1.0))
+    assert sample.valid[0]
+
+
+def test_trail_colours_fade_from_tail_to_head() -> None:
+    colours = trail_rgba(np.ones(8), particle_count=2, trail_segments=3)
+
+    assert colours.shape == (8, 4)
+    assert colours.dtype == np.uint8
+    assert colours[0, 3] < colours[3, 3]
+    assert colours[4, 3] < colours[7, 3]

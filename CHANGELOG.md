@@ -10,6 +10,9 @@ the development-version increments that existed in the working tree.
   coherent downstream wakes, and a viewport current-direction indicator.
 - Kept flow rendering independent of its mesh-derived velocity source so a future
   CFD field can replace it without changing the viewer layer.
+- Refined the Flow Field into a thin, smoothly interpolated surface layer with
+  fewer and longer fading paths, lane-based inlet seeding, midpoint integration,
+  restrained speed colours, and spatially anchored downstream recirculation.
 
 ## 0.6.2 — 2026-09-21
 
