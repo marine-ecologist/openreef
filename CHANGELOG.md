@@ -5,6 +5,8 @@ the development-version increments that existed in the working tree.
 
 ## Unreleased
 
+## 0.6.3 — 2026-10-02
+
 - Added a mesh-only Flow Field workflow beneath Viewer, with a textured-mesh
   resolution selector, terrain-following particle trails, relative-speed colour,
   coherent downstream wakes, and a viewport current-direction indicator.

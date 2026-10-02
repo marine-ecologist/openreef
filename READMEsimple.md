@@ -13,7 +13,7 @@ photogrammetry software. OpenReef follows the same broad idea as
 collection, visible quality checks, repeatable processing, and clearly stored
 outputs.
 
-OpenReef is under active development. Version 0.6.2 can build and scale 3D models with
+OpenReef is under active development. Version 0.6.3 can build and scale 3D models with
 temporary MarkerTags and provides initial metric length and surface-area inspection. It
 does not yet align repeat surveys or export a complete ecological measurement dataset.
 
@@ -31,7 +31,7 @@ launch** in the Advanced notes at the bottom of this page.
 ## The workflow in plain language
 
 ```text
-Data → Process [Sparse → MarkerTags → Crop → Dense → Texture → Splat → 3D Tiles] → Viewer
+Data → Process [Sparse → MarkerTags → Crop → Dense → Texture → Splat → 3D Tiles] → Viewer → Flow Field
 ```
 
 A typical project moves from left to right. Render images detects work already
@@ -290,7 +290,7 @@ launcher, or publish it through GitHub Pages to create a shareable web address.
 
 ## Current limitations
 
-Version 0.6.2 does not yet provide:
+Version 0.6.3 does not yet provide:
 
 - automatic mesh repair or hole filling;
 - real-world scale from scale bars or targets;
