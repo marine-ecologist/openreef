@@ -88,6 +88,9 @@ class PipelineOptions:
     memory_gb: float = 0.0
     use_gpu: bool = True
     matching_use_gpu: bool | None = None
+    bundle_adjustment_backend: str = "ceres"
+    ceres_use_gpu: bool = False
+    bundle_adjustment_gpu_index: int = -1
     camera_model: str = "SIMPLE_RADIAL"
     single_camera: bool = True
     max_image_size: int = 3200
@@ -959,6 +962,20 @@ def validate_stage(
     elif stage in (StageKey.MATCHING, StageKey.SPARSE):
         if not layout.database.is_file():
             raise StageConfigurationError("Run feature extraction first; database.db is missing.")
+        if stage == StageKey.SPARSE and options is not None:
+            backend = options.bundle_adjustment_backend.lower()
+            if backend not in {"ceres", "caspar"}:
+                raise StageConfigurationError(
+                    "Bundle-adjustment backend must be either 'ceres' or 'caspar'."
+                )
+            if backend == "caspar" and options.camera_model not in {
+                "SIMPLE_RADIAL",
+                "PINHOLE",
+            }:
+                raise StageConfigurationError(
+                    "Caspar bundle adjustment supports only SIMPLE_RADIAL and PINHOLE "
+                    "camera models."
+                )
     elif stage == StageKey.MARKERTAGS:
         if layout.sparse_model() is None:
             raise StageConfigurationError(
@@ -1117,6 +1134,12 @@ def build_stage_command(
                 str(layout.sparse),
                 "--cores",
                 str(options.cores),
+                "--ba-backend",
+                options.bundle_adjustment_backend.lower(),
+                "--ceres-use-gpu",
+                _flag(options.ceres_use_gpu),
+                "--ba-gpu-index",
+                str(options.bundle_adjustment_gpu_index),
                 "--levels",
                 ",".join(level for level, _, _ in levels),
                 "--medium-percent",

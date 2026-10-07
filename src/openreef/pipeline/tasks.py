@@ -32,6 +32,26 @@ def sparse_colmap(args: argparse.Namespace) -> int:
         "--Mapper.num_threads",
         str(args.cores),
     ]
+    if args.ba_backend == "caspar":
+        command.extend(
+            (
+                "--Mapper.ba_local_backend",
+                "CASPAR",
+                "--Mapper.ba_global_backend",
+                "CASPAR",
+                "--Mapper.ba_gpu_index",
+                str(args.ba_gpu_index),
+            )
+        )
+    elif args.ceres_use_gpu:
+        command.extend(
+            (
+                "--Mapper.ba_use_gpu",
+                "1",
+                "--Mapper.ba_gpu_index",
+                str(args.ba_gpu_index),
+            )
+        )
     print("Starting COLMAP sparse reconstruction", flush=True)
     result = subprocess.run(command, check=False)
     if result.returncode != 0:
@@ -781,6 +801,9 @@ def main() -> int:
     sparse.add_argument("--images", required=True)
     sparse.add_argument("--output", required=True)
     sparse.add_argument("--cores", type=int, required=True)
+    sparse.add_argument("--ba-backend", choices=("ceres", "caspar"), default="ceres")
+    sparse.add_argument("--ceres-use-gpu", type=int, choices=(0, 1), default=0)
+    sparse.add_argument("--ba-gpu-index", type=int, default=-1)
     sparse.add_argument("--levels", default="original")
     sparse.add_argument("--medium-percent", type=int, default=20)
     sparse.add_argument("--low-percent", type=int, default=5)

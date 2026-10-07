@@ -238,7 +238,7 @@ def generate_spatial_tileset(
     if root_model.is_file():
         root["content"] = {"uri": "root/coarse.glb"}
     tileset = {
-        "asset": {"version": "1.1", "generator": "OpenReef 0.6.3"},
+        "asset": {"version": "1.1", "generator": "OpenReef 0.6.4"},
         "geometricError": root["geometricError"],
         "root": root,
         "extras": {

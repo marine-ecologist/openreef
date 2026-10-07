@@ -5,6 +5,16 @@ the development-version increments that existed in the working tree.
 
 ## Unreleased
 
+## 0.6.4 — 2026-10-07
+
+- Added explicit COLMAP mapper bundle-adjustment modes for reproducible CPU Ceres,
+  CUDA Ceres, and experimental Caspar comparisons.
+- Added Caspar camera-model validation and CUDA-device selection. Caspar remains
+  opt-in because it requires a specially compiled COLMAP build and currently
+  supports only `SIMPLE_RADIAL` and `PINHOLE` cameras.
+- Preserved the default CPU Ceres mapper command for compatibility with existing
+  desktop COLMAP installations.
+
 ## 0.6.3 — 2026-10-02
 
 - Added a mesh-only Flow Field workflow beneath Viewer, with a textured-mesh

@@ -53,6 +53,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gpu", action=argparse.BooleanOptionalAction, default=True, help="Use COLMAP GPU"
     )
+    parser.add_argument(
+        "--bundle-adjustment-backend",
+        choices=("ceres", "caspar"),
+        default="ceres",
+        help="COLMAP mapper bundle-adjustment backend (default: ceres)",
+    )
+    parser.add_argument(
+        "--ceres-gpu",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use Ceres CUDA bundle adjustment when the COLMAP build supports it",
+    )
+    parser.add_argument(
+        "--bundle-adjustment-gpu-index",
+        type=int,
+        default=-1,
+        help="CUDA device for bundle adjustment; -1 lets COLMAP choose",
+    )
     parser.add_argument("--camera-model", default="SIMPLE_RADIAL")
     parser.add_argument("--single-camera", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-image-size", type=int, default=3200)
@@ -153,6 +171,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
         cores=args.cores,
         memory_gb=args.memory_gb,
         use_gpu=args.gpu,
+        bundle_adjustment_backend=args.bundle_adjustment_backend,
+        ceres_use_gpu=args.ceres_gpu,
+        bundle_adjustment_gpu_index=args.bundle_adjustment_gpu_index,
         camera_model=args.camera_model,
         single_camera=args.single_camera,
         max_image_size=args.max_image_size,

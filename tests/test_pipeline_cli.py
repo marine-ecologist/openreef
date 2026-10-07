@@ -10,6 +10,9 @@ def test_cli_defaults_to_complete_pipeline(tmp_path: Path) -> None:
     assert args.dataset == tmp_path
     assert args.stages == ALL_STAGES
     assert args.gpu
+    assert args.bundle_adjustment_backend == "ceres"
+    assert not args.ceres_gpu
+    assert args.bundle_adjustment_gpu_index == -1
     assert args.single_camera
     assert args.estimate_colors
     assert args.estimate_normals
@@ -42,6 +45,10 @@ def test_cli_accepts_selected_stages_and_resource_options(tmp_path: Path) -> Non
             "--memory-gb",
             "24",
             "--no-gpu",
+            "--bundle-adjustment-backend",
+            "caspar",
+            "--bundle-adjustment-gpu-index",
+            "1",
             "--force",
             "--dense-low",
             "--dense-medium",
@@ -63,6 +70,8 @@ def test_cli_accepts_selected_stages_and_resource_options(tmp_path: Path) -> Non
     assert args.cores == 8
     assert args.memory_gb == 24
     assert not args.gpu
+    assert args.bundle_adjustment_backend == "caspar"
+    assert args.bundle_adjustment_gpu_index == 1
     assert args.force
     assert args.dense_low
     assert args.dense_medium

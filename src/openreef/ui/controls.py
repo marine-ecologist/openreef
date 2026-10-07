@@ -101,7 +101,7 @@ class ViewerControls(QWidget):
 
         heading = QLabel("OPENREEF")
         heading.setObjectName("heading")
-        subtitle = QLabel("Viewer 0.6.3")
+        subtitle = QLabel("Viewer 0.6.4")
         subtitle.setObjectName("subtitle")
         layout.addWidget(heading)
         layout.addWidget(subtitle)

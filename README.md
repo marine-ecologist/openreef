@@ -12,9 +12,9 @@ placed in a consistent coordinate frame through time. The end goal is quantitati
 of colony dimensions, surface area, volume, structural complexity, and change between surveys.
 
 
-## Version 0.6.3
+## Version 0.6.4
 
-See [CHANGELOG.md](CHANGELOG.md) for the recorded 0.2.0–0.6.3 version history.
+See [CHANGELOG.md](CHANGELOG.md) for the recorded 0.2.0–0.6.4 version history.
 
 The desktop workflow is organized as:
 
@@ -103,7 +103,7 @@ terminal continues to stream detailed output.
   against the source mesh before the selected output complexity is saved.
 - Export screenshots and save or restore JSON camera viewpoints.
 
-OpenReef 0.6.3 includes OpenMVS surface reconstruction and texturing,
+OpenReef 0.6.4 includes OpenMVS surface reconstruction and texturing,
 sparse-camera QA, a downstream processing ROI, and an initial non-destructive
 lasso-trimming workflow, plus optional OpenSplat training and MarkerTag metric scaling. It
 does **not** yet perform hole filling, mesh repair, permanent-site alignment, or scientific
@@ -329,6 +329,18 @@ Useful examples:
 # Run without COLMAP GPU acceleration
 ./scripts/openreef-pipeline.sh /path/to/dataset --no-gpu
 
+# A. Baseline mapper: CPU Ceres bundle adjustment (default)
+./scripts/openreef-pipeline.sh /path/to/dataset --stages sparse --force \
+  --bundle-adjustment-backend ceres --no-ceres-gpu
+
+# B. Ceres CUDA bundle adjustment (requires a CUDA-enabled Ceres build)
+./scripts/openreef-pipeline.sh /path/to/dataset --stages sparse --force \
+  --bundle-adjustment-backend ceres --ceres-gpu
+
+# C. Experimental Caspar bundle adjustment (requires CASPAR_ENABLED=ON)
+./scripts/openreef-pipeline.sh /path/to/dataset --stages sparse --force \
+  --bundle-adjustment-backend caspar
+
 # Run only the OpenMVS stages
 ./scripts/openreef-pipeline.sh /path/to/dataset \
   --stages openmvs_import,dense,mesh,texture
@@ -355,8 +367,8 @@ Useful examples:
   --opensplat-executable ~/OpenSplat/build/opensplat
 ```
 
-Use `./scripts/openreef-pipeline.sh --help` for all camera, matching, image-size,
-dense-resolution, neighboring-view, CPU, RAM, and stage-selection options. The
+Use `./scripts/openreef-pipeline.sh --help` for all camera, matching, bundle-adjustment,
+image-size, dense-resolution, neighboring-view, CPU, RAM, and stage-selection options. The
 finished friendly filenames are collected in `models/`, including
 `dataset_sparsecloud.ply`, `dataset_densecloud_high.ply`, optional
 `dataset_densecloud_medium.ply` and `dataset_densecloud_low.ply`, and

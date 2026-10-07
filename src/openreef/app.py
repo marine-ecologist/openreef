@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="dataset folder or PLY, OBJ, or GLB model to open",
     )
-    parser.add_argument("--version", action="version", version="OpenReef 0.6.3")
+    parser.add_argument("--version", action="version", version="OpenReef 0.6.4")
     return parser
 
 
