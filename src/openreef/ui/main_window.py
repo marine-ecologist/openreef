@@ -89,7 +89,7 @@ class MainWindow(QMainWindow):
         restore_last_dataset: bool = True,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("OpenReef 0.6.4")
+        self.setWindowTitle("OpenReef 0.6.5")
         # The wider default leaves the embedded streaming 3D Tiles canvas useful
         # alongside the viewer controls without changing the compact dark layout.
         self.resize(1848, 1104)
@@ -303,7 +303,7 @@ class MainWindow(QMainWindow):
             )
             layout.addWidget(button)
         layout.addStretch(1)
-        version = QLabel("OpenReef v0.6.4")
+        version = QLabel("OpenReef v0.6.5")
         version.setObjectName("sidebarVersion")
         layout.addWidget(version)
         self._sync_navigation()
@@ -646,7 +646,7 @@ class MainWindow(QMainWindow):
         self._sync_dataset_root(root)
         self.tabs.setCurrentWidget(self.input_scroll)
         self._sync_navigation()
-        self.setWindowTitle(f"{root.name} — OpenReef 0.6.4")
+        self.setWindowTitle(f"{root.name} — OpenReef 0.6.5")
         self.statusBar().showMessage(f"Dataset: {root}")
 
     def _sync_dataset_root(self, path: str | Path) -> None:
@@ -670,7 +670,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "project_name"):
             self.project_name.setText(root.name)
             self.project_path.setText(str(root))
-        self.setWindowTitle(f"{root.name} — OpenReef 0.6.4")
+        self.setWindowTitle(f"{root.name} — OpenReef 0.6.5")
         message = f"Dataset: {root}"
         if reloaded is not None:
             message += f" · Viewer reloaded: {reloaded.name}"
@@ -847,7 +847,7 @@ class MainWindow(QMainWindow):
             available=has_mesh and self._measurement_scale_is_valid(metadata),
         )
         self.controls.set_history_available(False)
-        self.setWindowTitle(f"{document.source.name} — OpenReef Viewer 0.6.4")
+        self.setWindowTitle(f"{document.source.name} — OpenReef Viewer 0.6.5")
         self.statusBar().showMessage(f"Loaded {document.source}")
         self.controls.set_workflow_crop_stage(self._workflow_stage(document))
         if select_in_catalog:
@@ -884,7 +884,7 @@ class MainWindow(QMainWindow):
             "Detail is fetched progressively for the current camera view.\n\n"
             f"{format_viewer_diagnostics(metadata)}"
         )
-        self.setWindowTitle(f"{manifest.title} — OpenReef Viewer 0.6.4")
+        self.setWindowTitle(f"{manifest.title} — OpenReef Viewer 0.6.5")
         self.statusBar().showMessage(f"Opened streaming 3D Tiles from {manifest.tileset}")
         if select_in_catalog:
             self.controls.select_model(path)
@@ -1122,7 +1122,7 @@ class MainWindow(QMainWindow):
             available=self._measurement_scale_is_valid(metadata)
             and any(part.kind == "mesh" for part in document.parts),
         )
-        self.setWindowTitle(f"{document.source.name} — OpenReef Viewer 0.6.4")
+        self.setWindowTitle(f"{document.source.name} — OpenReef Viewer 0.6.5")
 
     def _undo_edit(self) -> None:
         if not self._edit_history:

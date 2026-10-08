@@ -12,9 +12,9 @@ placed in a consistent coordinate frame through time. The end goal is quantitati
 of colony dimensions, surface area, volume, structural complexity, and change between surveys.
 
 
-## Version 0.6.4
+## Version 0.6.5
 
-See [CHANGELOG.md](CHANGELOG.md) for the recorded 0.2.0–0.6.4 version history.
+See [CHANGELOG.md](CHANGELOG.md) for the recorded 0.2.0–0.6.5 version history.
 
 The desktop workflow is organized as:
 
@@ -103,7 +103,7 @@ terminal continues to stream detailed output.
   against the source mesh before the selected output complexity is saved.
 - Export screenshots and save or restore JSON camera viewpoints.
 
-OpenReef 0.6.4 includes OpenMVS surface reconstruction and texturing,
+OpenReef 0.6.5 includes OpenMVS surface reconstruction and texturing,
 sparse-camera QA, a downstream processing ROI, and an initial non-destructive
 lasso-trimming workflow, plus optional OpenSplat training and MarkerTag metric scaling. It
 does **not** yet perform hole filling, mesh repair, permanent-site alignment, or scientific

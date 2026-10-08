@@ -5,6 +5,15 @@ the development-version increments that existed in the working tree.
 
 ## Unreleased
 
+## 0.6.5 — 2026-10-09
+
+- Promoted the existing Ceres CUDA bundle-adjustment controls to the cloud
+  benchmark baseline, while retaining CPU Ceres as the portable desktop default.
+- Kept the mapper GPU index explicit so cloud runs can be reproduced on a single
+  selected accelerator without changing the reconstruction workflow.
+- Aligned desktop and cloud release metadata before the OpenReef GPU matrix was
+  rebuilt and rerun against the same 248-image compact workload.
+
 ## 0.6.4 — 2026-10-07
 
 - Added explicit COLMAP mapper bundle-adjustment modes for reproducible CPU Ceres,
